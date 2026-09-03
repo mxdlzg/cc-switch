@@ -272,6 +272,54 @@ pub(crate) fn inject_openai_stream_include_usage(result: &mut Value) {
     }
 }
 
+/// 严格上游兼容：把 `messages` 里所有 `role:"system"` 消息合并为一条并置于开头。
+///
+/// 仅在 provider 显式开启 `hoistSystemToHead` 时调用（见 claude.rs 的 openai_chat
+/// 分支）。默认路径下中途 system 原位保留（d8065cc），本函数不参与。
+///
+/// 复刻 v3.20.1 的 `normalize_openai_system_messages`：
+/// - 无 system → 原样返回（多数请求命中此分支：顶层 system 已在 index 0）
+/// - 仅 1 条且已在开头 → 原样返回（幂等，绝大多数常规流量到此为止）
+/// - ≥2 条，或有中途 system → 抽出所有 system 文本、按 "\n" 拼接、重插到 index 0。
+///   非 system 消息保持原有相对顺序。
+///
+/// 代价：若被上提的中途 system（如 Claude Code 的 `<total_tokens>` 计数）每轮变化，
+/// 头部字节随之变化 → 击穿前缀缓存。故为 provider 级 opt-in，而非默认。
+pub(crate) fn hoist_system_messages_to_head(messages: &mut Vec<Value>) {
+    if !messages
+        .iter()
+        .any(|m| m.get("role").and_then(|v| v.as_str()) == Some("system"))
+    {
+        return;
+    }
+
+    let mut parts = Vec::new();
+    messages.retain(|message| {
+        if message.get("role").and_then(|v| v.as_str()) != Some("system") {
+            return true;
+        }
+        match message.get("content") {
+            Some(Value::String(text)) if !text.is_empty() => parts.push(text.clone()),
+            Some(Value::Array(blocks)) => {
+                let text = blocks
+                    .iter()
+                    .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !text.is_empty() {
+                    parts.push(text);
+                }
+            }
+            _ => {}
+        }
+        false
+    });
+
+    if !parts.is_empty() {
+        messages.insert(0, json!({ "role": "system", "content": parts.join("\n") }));
+    }
+}
+
 /// Translate an Anthropic `tool_choice` into the OpenAI Chat Completions form.
 ///
 /// Anthropic forms:
@@ -1983,5 +2031,56 @@ mod tests {
             run_tool_choice(json!({"type": "tool", "name": "search"})),
             json!({"type": "function", "function": {"name": "search"}}),
         );
+    }
+
+    #[test]
+    fn hoist_noop_when_no_system() {
+        let mut messages = vec![
+            json!({"role": "user", "content": "a"}),
+            json!({"role": "assistant", "content": "b"}),
+        ];
+        hoist_system_messages_to_head(&mut messages);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "user");
+    }
+
+    #[test]
+    fn hoist_noop_when_single_system_already_at_head() {
+        // 常规流量：顶层 system 已在 index 0 → 原样不动（幂等）。
+        let mut messages = vec![
+            json!({"role": "system", "content": "You are Claude Code."}),
+            json!({"role": "user", "content": "a"}),
+        ];
+        hoist_system_messages_to_head(&mut messages);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "You are Claude Code.");
+    }
+
+    #[test]
+    fn hoist_merges_mid_conversation_system_to_head() {
+        // 中途 system（total_tokens 之类）被并入开头的一条，非 system 保持相对顺序。
+        let mut messages = vec![
+            json!({"role": "system", "content": "You are Claude Code."}),
+            json!({"role": "user", "content": "Hello"}),
+            json!({"role": "assistant", "content": "Hi"}),
+            json!({"role": "system", "content": "<total_tokens>100 left</total_tokens>"}),
+            json!({"role": "user", "content": "Continue"}),
+        ];
+        hoist_system_messages_to_head(&mut messages);
+
+        // 5 条里两条 system 合并为一条 → 共 4 条。
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(
+            messages[0]["content"],
+            "You are Claude Code.\n<total_tokens>100 left</total_tokens>"
+        );
+        // 非 system 相对顺序不变
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "Hello");
+        assert_eq!(messages[2]["role"], "assistant");
+        assert_eq!(messages[3]["role"], "user");
+        assert_eq!(messages[3]["content"], "Continue");
     }
 }

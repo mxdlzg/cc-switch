@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/collapsible";
 import { toast } from "sonner";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import {
@@ -152,6 +153,10 @@ interface ClaudeFormFieldsProps {
   isFullUrl: boolean;
   onFullUrlChange: (value: boolean) => void;
 
+  // Strict-upstream: hoist mid-conversation system messages to the head
+  hoistSystemToHead: boolean;
+  onHoistSystemToHeadChange: (value: boolean) => void;
+
   // Local proxy User-Agent override
   customUserAgent: string;
   onCustomUserAgentChange: (value: string) => void;
@@ -219,6 +224,8 @@ export function ClaudeFormFields({
   onApiKeyFieldChange,
   isFullUrl,
   onFullUrlChange,
+  hoistSystemToHead,
+  onHoistSystemToHeadChange,
   customUserAgent,
   onCustomUserAgentChange,
   localProxyHeadersOverride,
@@ -239,6 +246,7 @@ export function ClaudeFormFields({
     subagentModel ||
     (!isXaiOauthPreset && apiFormat !== "anthropic") ||
     apiKeyField !== "ANTHROPIC_AUTH_TOKEN" ||
+    hoistSystemToHead ||
     customUserAgent ||
     hasRequestOverrides
   );
@@ -847,6 +855,33 @@ export function ClaudeFormFields({
                       "供应商原生为 Anthropic Messages API 就选 Anthropic Messages（直连，不转换格式）；使用 Chat Completions 协议就选 Chat；使用 Responses API 就选 Responses；使用 Gemini generateContent 协议就选 Gemini Native。Chat、Responses 与 Gemini Native 均需开启路由接管才能转换为 Anthropic Messages。",
                   })}
                 </p>
+              </div>
+            )}
+
+            {/* 严格上游：把中途 system 上提到开头（仅 Chat / Responses 转换格式） */}
+            {(apiFormat === "openai_chat" ||
+              apiFormat === "openai_responses") && (
+              <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
+                <div className="space-y-1">
+                  <FormLabel>
+                    {t("providerForm.hoistSystemToHeadLabel", {
+                      defaultValue: "把系统消息上提到开头",
+                    })}
+                  </FormLabel>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {t("providerForm.hoistSystemToHeadHint", {
+                      defaultValue:
+                        "针对会拒绝「对话中途出现 system 消息」的严格上游（报错：system message must be at the beginning）。Claude Code 会把 <total_tokens> 作为对话中途的 system 消息注入；开启后把它合并进开头的系统消息。代价：若这段注入内容每轮变化，开头字节随之变化，前缀缓存每轮失效——对缓存友好的上游请保持关闭。",
+                    })}
+                  </p>
+                </div>
+                <Switch
+                  checked={hoistSystemToHead}
+                  onCheckedChange={onHoistSystemToHeadChange}
+                  aria-label={t("providerForm.hoistSystemToHeadLabel", {
+                    defaultValue: "把系统消息上提到开头",
+                  })}
+                />
               </div>
             )}
 

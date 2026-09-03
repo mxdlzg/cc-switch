@@ -1283,6 +1283,8 @@
     "anthropicSmallFastModel": "高速モデル",
     "apiFormat": "上流フォーマット",
     "apiFormatHint": "プロバイダーがネイティブ Anthropic Messages API なら Anthropic Messages を選択（直結、フォーマット変換なし）。Chat Completions プロトコルなら Chat、Responses API なら Responses、Gemini generateContent プロトコルなら Gemini Native を選択。Chat、Responses、Gemini Native は Anthropic Messages への変換にルーティング引き継ぎの有効化が必要です。",
+    "hoistSystemToHeadLabel": "システムメッセージを先頭に集約",
+    "hoistSystemToHeadHint": "会話の途中に system メッセージが現れることを拒否する厳しい上流向け（エラー: \"system message must be at the beginning\"）。Claude Code は <total_tokens> を会話途中の system メッセージとして挿入します。有効にすると先頭のシステムメッセージに統合します。代償：この挿入内容が毎回変化すると先頭バイトが変わり、毎回プレフィックスキャッシュが外れます。キャッシュに優しい上流ではオフのままにしてください。Chat / Responses 変換形式のみに影響します。",
     "customUserAgent": "カスタム User-Agent",
     "customUserAgentHint": "ローカルルーティング/プロキシ引き継ぎが有効な場合にのみ適用され、プロバイダー API へ転送するリクエストの User-Agent を置き換えます。",
     "customUserAgentInvalid": "User-Agent に制御文字（改行など）を含めることはできません。含まれている場合は無視されます。",

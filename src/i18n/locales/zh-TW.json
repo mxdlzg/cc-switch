@@ -1284,6 +1284,8 @@
     "anthropicSmallFastModel": "快速模型",
     "apiFormat": "上游格式",
     "apiFormatHint": "供應商原生為 Anthropic Messages API 就選 Anthropic Messages（直連，不轉換格式）；使用 Chat Completions 協定就選 Chat；使用 Responses API 就選 Responses；使用 Gemini generateContent 協定就選 Gemini Native。Chat、Responses 與 Gemini Native 均需開啟路由接管才能轉換為 Anthropic Messages。",
+    "hoistSystemToHeadLabel": "把系統訊息上提到開頭",
+    "hoistSystemToHeadHint": "針對會拒絕「對話中途出現 system 訊息」的嚴格上游（錯誤：system message must be at the beginning）。Claude Code 會把 <total_tokens> 作為對話中途的 system 訊息注入；開啟後把它合併進開頭的系統訊息。代價：若這段注入內容每輪變化，開頭位元組隨之變化，前綴快取每輪失效——對快取友好的上游請保持關閉。僅影響 Chat / Responses 轉換格式。",
     "customUserAgent": "自訂 User-Agent",
     "customUserAgentHint": "僅在開啟本地路由/代理接管後生效，會取代轉發至供應商 API 請求中的 User-Agent。",
     "customUserAgentInvalid": "User-Agent 不能包含控制字元（如換行字元），否則將被忽略。",

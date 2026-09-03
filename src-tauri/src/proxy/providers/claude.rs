@@ -414,6 +414,11 @@ pub fn transform_claude_request_for_api_format(
                 is_codex_oauth,
                 codex_fast_mode,
             )?;
+            // 严格上游 opt-in：把 input 里中途的 system item 并入 instructions（默认
+            // 关闭）。与 openai_chat 分支同源，见 provider.rs::hoist_system_to_head。
+            if provider.hoist_system_to_head_enabled() {
+                super::transform_responses::hoist_system_items_to_instructions(&mut result);
+            }
             if provider.is_xai_oauth() {
                 const REASONING_MARKER: &str = "reasoning.encrypted_content";
                 let mut include = result
@@ -438,6 +443,15 @@ pub fn transform_claude_request_for_api_format(
                 body,
                 preserve_reasoning_content,
             )?;
+            // 严格上游 opt-in：把中途 system 合并上提到开头（默认关闭，见
+            // provider.rs::hoist_system_to_head）。默认路径保持 d8065cc 的中途
+            // system 原位行为以保前缀缓存；仅对确认「上游严格且注入内容稳定」的
+            // 供应商开启，复刻 v3.20.1 兼容行为。
+            if provider.hoist_system_to_head_enabled() {
+                if let Some(messages) = result["messages"].as_array_mut() {
+                    super::transform::hoist_system_messages_to_head(messages);
+                }
+            }
             // Inject prompt_cache_key only if explicitly configured in meta
             if let Some(key) = provider
                 .meta
@@ -2682,5 +2696,78 @@ mod tests {
         assert!(changed);
         assert_eq!(body["thinking"]["type"], "disabled");
         assert!(body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn test_openai_chat_keeps_mid_system_in_place_by_default() {
+        // 默认（未开 hoistSystemToHead）：中途 system 原位保留，保前缀缓存
+        // （d8065cc 行为）。
+        let provider = create_provider_with_meta(
+            json!({ "env": { "ANTHROPIC_BASE_URL": "https://example.com/v1" } }),
+            ProviderMeta {
+                api_format: Some("openai_chat".to_string()),
+                ..ProviderMeta::default()
+            },
+        );
+        let body = json!({
+            "model": "claude-3-5-sonnet",
+            "system": "You are Claude Code.",
+            "messages": [
+                { "role": "user", "content": "Hello" },
+                { "role": "system", "content": "<total_tokens>100 left</total_tokens>" },
+                { "role": "user", "content": "Continue" }
+            ],
+            "max_tokens": 128
+        });
+
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None, None)
+                .unwrap();
+        let messages = transformed["messages"].as_array().unwrap();
+        // 顶层 system 在头，中途 system 仍在原位（未被合并/上提），共 4 条。
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "You are Claude Code.");
+        assert_eq!(messages[2]["role"], "system");
+        assert_eq!(
+            messages[2]["content"],
+            "<total_tokens>100 left</total_tokens>"
+        );
+    }
+
+    #[test]
+    fn test_openai_chat_hoists_mid_system_when_opted_in() {
+        // 开启 hoistSystemToHead：中途 system 合并上提到开头，兼容严格上游。
+        let provider = create_provider_with_meta(
+            json!({ "env": { "ANTHROPIC_BASE_URL": "https://example.com/v1" } }),
+            ProviderMeta {
+                api_format: Some("openai_chat".to_string()),
+                hoist_system_to_head: Some(true),
+                ..ProviderMeta::default()
+            },
+        );
+        let body = json!({
+            "model": "claude-3-5-sonnet",
+            "system": "You are Claude Code.",
+            "messages": [
+                { "role": "user", "content": "Hello" },
+                { "role": "system", "content": "<total_tokens>100 left</total_tokens>" },
+                { "role": "user", "content": "Continue" }
+            ],
+            "max_tokens": 128
+        });
+
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None, None)
+                .unwrap();
+        let messages = transformed["messages"].as_array().unwrap();
+        // 两条 system 合并为一条置头 → 共 3 条，且不再有中途 system。
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(
+            messages[0]["content"],
+            "You are Claude Code.\n<total_tokens>100 left</total_tokens>"
+        );
+        assert!(!messages[1..].iter().any(|m| m["role"] == json!("system")));
     }
 }

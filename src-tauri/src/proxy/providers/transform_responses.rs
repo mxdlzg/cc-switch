@@ -2020,6 +2020,58 @@ pub fn anthropic_to_responses(
     Ok(result)
 }
 
+/// 严格上游 opt-in：把 `input` 里 `role:"system"` 的 message item 并入顶层
+/// `instructions` 并从 `input` 移除。仅由 claude.rs 的 openai_responses 分支在
+/// provider 开启 `hoistSystemToHead` 时调用（默认关闭，见 provider.rs）。
+///
+/// Responses API 用顶层 `instructions` 而非 system role message 承载系统提示；
+/// 中途注入的 system（Claude Code 的 `<total_tokens>` 等）在 convert_messages_to_input
+/// 里被原样转成 `role:"system"` item。严格上游不接受 input 中间出现 system，
+/// 故把它们并入 instructions（等价于 chat 路径的上提到开头）。
+///
+/// 代价与 chat 路径相同：注入内容每轮变化会击穿前缀缓存。故 opt-in。
+pub(crate) fn hoist_system_items_to_instructions(result: &mut Value) {
+    let system_texts: Vec<String> = match result.get_mut("input").and_then(Value::as_array_mut) {
+        Some(input) => {
+            let mut texts = Vec::new();
+            input.retain(|item| {
+                if item.get("role").and_then(|v| v.as_str()) != Some("system") {
+                    return true;
+                }
+                if let Some(parts) = item.get("content").and_then(Value::as_array) {
+                    let text = parts
+                        .iter()
+                        .filter_map(|p| p.get("text").and_then(|v| v.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !text.is_empty() {
+                        texts.push(text);
+                    }
+                }
+                false
+            });
+            texts
+        }
+        None => return,
+    };
+
+    if system_texts.is_empty() {
+        return;
+    }
+
+    let appended = system_texts.join("\n");
+    let existing = result
+        .get("instructions")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let merged = if existing.is_empty() {
+        appended
+    } else {
+        format!("{existing}\n{appended}")
+    };
+    result["instructions"] = json!(merged);
+}
+
 fn map_tool_choice_to_responses(
     tool_choice: &Value,
     hosted_web_search_names: &HashSet<String>,
@@ -5304,5 +5356,56 @@ mod tests {
         assert_eq!(result["output_tokens"], json!(0));
         assert_eq!(result["cache_read_input_tokens"], json!(60));
         assert_eq!(result["cache_creation_input_tokens"], json!(20));
+    }
+
+    #[test]
+    fn hoist_system_items_merges_mid_system_into_instructions() {
+        // 中途 system item（convert_messages_to_input 产出的 role:system）被并入
+        // 顶层 instructions 并从 input 移除；已有 instructions 内容保留在前。
+        let mut result = json!({
+            "instructions": "You are Claude Code.",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Hello"}]},
+                {"role": "system", "content": [{"type": "input_text", "text": "<total_tokens>100</total_tokens>"}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "Continue"}]}
+            ]
+        });
+        hoist_system_items_to_instructions(&mut result);
+
+        assert_eq!(
+            result["instructions"],
+            "You are Claude Code.\n<total_tokens>100</total_tokens>"
+        );
+        let input = result["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        assert!(input
+            .iter()
+            .all(|item| item["role"] != json!("system")));
+    }
+
+    #[test]
+    fn hoist_system_items_noop_without_system() {
+        let mut result = json!({
+            "instructions": "sys",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}
+            ]
+        });
+        hoist_system_items_to_instructions(&mut result);
+        assert_eq!(result["instructions"], "sys");
+        assert_eq!(result["input"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hoist_system_items_creates_instructions_when_absent() {
+        // 顶层没有 instructions（客户端未传 system 字段）时，中途 system 直接建一个。
+        let mut result = json!({
+            "input": [
+                {"role": "system", "content": [{"type": "input_text", "text": "only-mid"}]}
+            ]
+        });
+        hoist_system_items_to_instructions(&mut result);
+        assert_eq!(result["instructions"], "only-mid");
+        assert!(result["input"].as_array().unwrap().is_empty());
     }
 }

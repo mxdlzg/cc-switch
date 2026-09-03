@@ -220,6 +220,13 @@ export interface ProviderMeta {
   codexChatReasoning?: CodexChatReasoning;
   // Codex → Anthropic path: emulate the Claude Code client (disabled by default; only an explicit true enables it)
   impersonateClaudeCode?: boolean;
+  // OpenAI transform paths (openai_chat / openai_responses): when true, mid-conversation
+  // `role:"system"` messages (Claude Code injects <total_tokens> etc.) are merged and
+  // hoisted to the head (chat) / folded into `instructions` (responses) for strict
+  // upstreams that reject a system message mid-conversation. Off by default: mid system
+  // messages stay in place to preserve prefix cache. Only enable for providers whose
+  // injected system content is stable across turns (otherwise it busts the cache).
+  hoistSystemToHead?: boolean;
   // Codex → Anthropic path: override the Anthropic max_tokens (output ceiling).
   // Codex does not forward model_max_output_tokens in the request body; without
   // this the path falls back to a conservative 8192 default, which can truncate

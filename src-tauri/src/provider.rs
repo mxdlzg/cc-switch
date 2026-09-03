@@ -127,6 +127,15 @@ impl Provider {
             .unwrap_or(false)
     }
 
+    /// OpenAI 转换路径是否把中途 system 消息上提到开头。见
+    /// [`ProviderMeta::hoist_system_to_head`]。默认关闭。
+    pub fn hoist_system_to_head_enabled(&self) -> bool {
+        self.meta
+            .as_ref()
+            .map(|m| m.hoist_system_to_head_enabled())
+            .unwrap_or(false)
+    }
+
     pub fn has_usage_script_enabled(&self) -> bool {
         self.meta
             .as_ref()
@@ -529,6 +538,22 @@ pub struct ProviderMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub impersonate_claude_code: Option<bool>,
+    /// OpenAI 转换路径（openai_chat / openai_responses）：是否把对话中途出现的
+    /// `role:"system"` 消息（Claude Code 会注入 `<total_tokens>` 之类的元信息）
+    /// 合并上提到请求开头。
+    ///
+    /// - 关闭（默认）：中途 system 原位保留——保住前缀缓存，但严格上游会因
+    ///   "system message must be at the beginning" 直接 400（见 d8065cc / #6941）。
+    /// - 开启：合并上提到开头（chat）或并入 instructions（responses）——兼容严格
+    ///   上游，代价是若该元信息每轮变化会击穿前缀缓存。
+    ///
+    /// 与上游 d8065cc 之前 v3.20.1 的行为一致；作为 provider 级开关默认关闭，
+    /// 只对确认「上游严格但注入的 system 内容稳定」的供应商开启，缓存不受影响。
+    #[serde(
+        rename = "hoistSystemToHead",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hoist_system_to_head: Option<bool>,
     /// Codex → Anthropic path: override the Anthropic `max_tokens` (output ceiling).
     ///
     /// Codex does not forward its `model_max_output_tokens` in the Responses
@@ -593,6 +618,11 @@ impl ProviderMeta {
     /// 会按更高速率消耗 ChatGPT 订阅配额，用户需显式开启以换取更低延迟。
     pub fn codex_fast_mode_enabled(&self) -> bool {
         self.codex_fast_mode.unwrap_or(false)
+    }
+
+    /// 见 [`ProviderMeta::hoist_system_to_head`]。默认关闭（保持原位、保前缀缓存）。
+    pub fn hoist_system_to_head_enabled(&self) -> bool {
+        self.hoist_system_to_head.unwrap_or(false)
     }
 
     /// 经校验的 Provider 级自定义 User-Agent。见 [`parse_custom_user_agent`]。

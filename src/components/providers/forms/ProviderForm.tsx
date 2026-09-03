@@ -547,6 +547,12 @@ function ProviderFormFull({
     setLocalApiFormat(format);
   }, []);
 
+  // 严格上游：是否把中途 system 上提到开头（仅 Chat / Responses 转换格式生效）。
+  // 默认关闭（保持 d8065cc 的中途 system 原位行为，保前缀缓存）。
+  const [localHoistSystemToHead, setLocalHoistSystemToHead] = useState<boolean>(
+    () => initialData?.meta?.hoistSystemToHead === true,
+  );
+
   const handleApiKeyFieldChange = useCallback(
     (field: ClaudeApiKeyField) => {
       const prev = localApiKeyField;
@@ -1821,6 +1827,15 @@ function ProviderFormFull({
         Number(localCodexMaxOutputTokens) > 0
           ? Number(localCodexMaxOutputTokens)
           : undefined,
+      // 严格上游：仅 Chat / Responses 转换格式 + 用户显式开启时持久化（默认关闭）
+      hoistSystemToHead:
+        appId === "claude" &&
+        category !== "official" &&
+        (localApiFormat === "openai_chat" ||
+          localApiFormat === "openai_responses") &&
+        localHoistSystemToHead
+          ? true
+          : undefined,
       isFullUrl:
         supportsFullUrl &&
         category !== "official" &&
@@ -2428,6 +2443,8 @@ function ProviderFormFull({
               onApiKeyFieldChange={handleApiKeyFieldChange}
               isFullUrl={localIsFullUrl}
               onFullUrlChange={setLocalIsFullUrl}
+              hoistSystemToHead={localHoistSystemToHead}
+              onHoistSystemToHeadChange={setLocalHoistSystemToHead}
               customUserAgent={customUserAgent}
               onCustomUserAgentChange={setCustomUserAgent}
               localProxyHeadersOverride={localProxyHeadersOverride}
