@@ -3,3 +3,4 @@
  */
 
 export { ProxyPanel } from "./ProxyPanel";
+export { GatewayPanel } from "./GatewayPanel";

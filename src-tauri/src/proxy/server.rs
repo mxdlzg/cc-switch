@@ -373,6 +373,62 @@ impl ProxyServer {
             .route("/gemini/v1beta/*path", any(handlers::handle_gemini))
             // Gemini 的 GA 版本也叫 /v1，给原 SDK 留一条出口
             .route("/gemini/v1/*path", any(handlers::handle_gemini))
+            // ── 本地网关（`/gateway/*`）────────────────────────────────
+            //
+            // 供**非 cc-switch 管理**的第三方工具接入：与上面这些路由不同，
+            // 每条网关路由都要求 `Authorization: Bearer <gateway token>`，
+            // 且供应商来自网关自己的选择（不受首页「当前供应商」切换影响）。
+            //
+            // 前缀即方言——一个前缀对应一类客户端协议；网关不写任何 CLI 的
+            // Live 配置文件。见 `services/gateway.rs`。
+            .route(
+                "/gateway/claude/v1/messages",
+                post(handlers::handle_gateway_claude_messages),
+            )
+            .route(
+                "/gateway/codex/v1/responses",
+                post(handlers::handle_gateway_codex_responses),
+            )
+            .route(
+                "/gateway/codex/v1/chat/completions",
+                post(handlers::handle_gateway_codex_chat),
+            )
+            .route(
+                "/gateway/grokbuild/v1/responses",
+                post(handlers::handle_gateway_grokbuild_responses),
+            )
+            // 与 /v1beta 同理用 `any(..)`：GET /v1beta/models 等只读端点也要过鉴权。
+            .route(
+                "/gateway/gemini/v1beta/*path",
+                any(handlers::handle_gateway_gemini),
+            )
+            .route(
+                "/gateway/gemini/v1/*path",
+                any(handlers::handle_gateway_gemini),
+            )
+            // 目录端点：把各 namespace 的模型目录按方言暴露。静态段（`models`）
+            // 优先于上面 `/gateway/gemini/v1beta/*path` 的 catch-all，故不会被
+            // 当成 Gemini 转发请求。同样要求 Bearer 令牌（见各 handler 首行）。
+            .route(
+                "/gateway/claude/v1/models",
+                get(handlers::handle_gateway_claude_models),
+            )
+            .route(
+                "/gateway/codex/v1/models",
+                get(handlers::handle_gateway_codex_models),
+            )
+            .route(
+                "/gateway/grokbuild/v1/models",
+                get(handlers::handle_gateway_grokbuild_models),
+            )
+            .route(
+                "/gateway/gemini/v1beta/models",
+                get(handlers::handle_gateway_gemini_models),
+            )
+            .route(
+                "/gateway/gemini/v1/models",
+                get(handlers::handle_gateway_gemini_models),
+            )
             // 提高默认请求体大小限制（避免 413 Payload Too Large）
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
             .with_state(self.state.clone())

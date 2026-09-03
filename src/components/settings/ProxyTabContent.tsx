@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Server, Activity, Zap, Globe, ShieldAlert } from "lucide-react";
+import { Server, Activity, Zap, Globe, ShieldAlert, KeyRound } from "lucide-react";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import {
@@ -11,6 +11,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { ProxyPanel } from "@/components/proxy";
+import { GatewayPanel } from "@/components/proxy/GatewayPanel";
 import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPanel";
 import { FailoverQueueManager } from "@/components/proxy/FailoverQueueManager";
 import { RectifierConfigPanel } from "@/components/settings/RectifierConfigPanel";
@@ -134,6 +135,29 @@ export function ProxyTabContent({
               onToggleProxy={handleToggleProxy}
               isProxyPending={isProxyPending}
             />
+          </AccordionContent>
+        </AccordionItem>
+
+        {/* Local Gateway */}
+        <AccordionItem
+          value="gateway"
+          className="rounded-xl glass-card overflow-hidden"
+        >
+          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+            <div className="flex items-center gap-3">
+              <KeyRound className="h-5 w-5 text-blue-500" />
+              <div className="text-left">
+                <h3 className="text-base font-semibold">
+                  {t("settings.advanced.gateway.title")}
+                </h3>
+                <p className="text-sm text-muted-foreground font-normal">
+                  {t("settings.advanced.gateway.description")}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+            <GatewayPanel />
           </AccordionContent>
         </AccordionItem>
 

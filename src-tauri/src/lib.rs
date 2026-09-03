@@ -1574,6 +1574,13 @@ pub fn run() {
             commands::is_proxy_running,
             commands::is_live_takeover_active,
             commands::switch_proxy_provider,
+            // Local gateway (`/gateway/*` endpoints, never touches Live configs)
+            commands::get_gateway_info,
+            commands::rotate_gateway_token,
+            commands::set_gateway_enabled,
+            commands::set_gateway_catalog,
+            commands::get_gateway_provider_options,
+            commands::get_gateway_provider_models,
             // Proxy failover commands
             commands::get_provider_health,
             commands::reset_circuit_breaker,

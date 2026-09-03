@@ -188,6 +188,15 @@ pub struct RequestForwarder {
     /// `max_attempts = max_retries + 1`，所以 max_retries=0 表示仅尝试一家、
     /// max_retries=3（默认）表示最多 4 家。loop 同时受 providers.len() 自然限制。
     max_attempts: usize,
+    /// 本请求来自 `/gateway/*` 端点（第三方工具接入，不属于任何被接管的应用）。
+    ///
+    /// 网关请求**绝不能**产生接管侧的副作用，否则会破坏「不改 CLI 配置」这一前提：
+    /// - 不记录熔断器/`provider_health` 健康度：否则网关请求失败会打开熔断器，
+    ///   连带把用户真实 CLI 流量切到备用供应商；
+    /// - 不触发 `failover_manager.try_switch`（→ `hot_switch_provider` → 写 Live 文件）；
+    /// - 不写 `current_providers`（→ `active_targets` → UI「当前供应商」高亮）。
+    ///   这一项由构造方传入一个一次性 map 实现，无需在此判断。
+    is_gateway: bool,
 }
 
 impl RequestForwarder {
@@ -255,6 +264,7 @@ impl RequestForwarder {
         optimizer_config: OptimizerConfig,
         copilot_optimizer_config: CopilotOptimizerConfig,
         max_retries: u32,
+        is_gateway: bool,
     ) -> Self {
         // max_retries 是「失败后重试次数」语义，attempt 上限 = retries + 1。
         // saturating_add 防止 u32::MAX + 1 溢出。
@@ -278,6 +288,7 @@ impl RequestForwarder {
                 streaming_first_byte_timeout,
             ),
             max_attempts,
+            is_gateway,
         }
     }
 
@@ -287,6 +298,18 @@ impl RequestForwarder {
         app_type: &str,
         used_half_open_permit: bool,
     ) {
+        // 网关请求不计入供应商健康度：它与接管侧共享同一个熔断器 key
+        // (`{app_type}:{provider_id}`)，若计入，则第三方工具的失败会打开熔断器、
+        // 把用户真实 CLI 流量切到备用供应商。
+        if self.is_gateway {
+            if used_half_open_permit {
+                self.router
+                    .release_permit_neutral(provider_id, app_type, true)
+                    .await;
+            }
+            return;
+        }
+
         if used_half_open_permit {
             if let Err(e) = self
                 .router
@@ -341,16 +364,19 @@ impl RequestForwarder {
         };
 
         if is_provider_error {
-            let _ = self
-                .router
-                .record_result(
-                    &provider.id,
-                    app_type_str,
-                    used_half_open_permit,
-                    false,
-                    Some(retry_err.to_string()),
-                )
-                .await;
+            // 同 `forward_with_retry_inner` 的 Retryable 分支：网关请求不记录健康度。
+            if !self.is_gateway {
+                let _ = self
+                    .router
+                    .record_result(
+                        &provider.id,
+                        app_type_str,
+                        used_half_open_permit,
+                        false,
+                        Some(retry_err.to_string()),
+                    )
+                    .await;
+            }
             {
                 let mut status = self.status.write().await;
                 status.last_error = Some(format!(
@@ -1056,16 +1082,23 @@ impl RequestForwarder {
                     match category {
                         ErrorCategory::Retryable => {
                             // 可重试：真正的 provider 故障 → 记录失败并更新熔断器/DB 健康度
-                            let _ = self
-                                .router
-                                .record_result(
-                                    &provider.id,
-                                    app_type_str,
-                                    used_half_open_permit,
-                                    false,
-                                    Some(e.to_string()),
-                                )
-                                .await;
+                            //
+                            // 网关请求例外：它与接管侧共享熔断器 key，若记录失败，
+                            // 第三方工具的一次超时就足以打开熔断器，把用户真实 CLI
+                            // 流量切走。网关是单 provider 链路、本就不走故障转移队列，
+                            // 跳过记录不损失任何恢复能力。
+                            if !self.is_gateway {
+                                let _ = self
+                                    .router
+                                    .record_result(
+                                        &provider.id,
+                                        app_type_str,
+                                        used_half_open_permit,
+                                        false,
+                                        Some(e.to_string()),
+                                    )
+                                    .await;
+                            }
 
                             {
                                 let mut status = self.status.write().await;
@@ -1245,7 +1278,15 @@ impl RequestForwarder {
         // 应用模型映射（独立于格式转换）
         // Claude Desktop proxy 模式必须先把 Desktop 可见的 claude-* route
         // 映射成真实上游模型名，并且未知 route 要直接报错，不能使用默认模型兜底。
-        let mapped_body = if matches!(app_type, AppType::ClaudeDesktop) {
+        //
+        // 网关请求**跳过所有模型名改写**：网关按「客户端显式指定的 model 命中目录」
+        // 路由，目录的意义就是该 model 必须原样送达上游。别名映射（把模型重写成
+        // provider 的 ANTHROPIC_MODEL 等默认值）、Codex/Grok 的 upstream-model 覆盖、
+        // Copilot 的模型归一化都会改写 body["model"] → 直接摧毁路由（选了 opus 被
+        // 改成 sonnet）。thinking 归一与 [1M] 剥离不属于模型名改写，保留。
+        let mapped_body = if self.is_gateway {
+            body.clone()
+        } else if matches!(app_type, AppType::ClaudeDesktop) {
             crate::claude_desktop_config::map_proxy_request_model(body.clone(), provider)
                 .map_err(|e| ProxyError::InvalidRequest(e.to_string()))?
         } else {
@@ -1260,11 +1301,12 @@ impl RequestForwarder {
         // Grok Build exposes a stable client-side model profile in config.toml.
         // Route requests to the provider's real upstream model before applying
         // the optional Responses -> Chat/Anthropic bridge.
-        if matches!(app_type, AppType::GrokBuild) {
+        // 网关请求跳过：见上，模型名须原样送达。
+        if !self.is_gateway && matches!(app_type, AppType::GrokBuild) {
             super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
         }
 
-        if is_copilot {
+        if is_copilot && !self.is_gateway {
             mapped_body =
                 super::providers::copilot_model_map::apply_copilot_model_normalization(mapped_body);
             self.apply_copilot_live_model_resolution(provider, &mut mapped_body)
@@ -1329,7 +1371,11 @@ impl RequestForwarder {
             }
 
             // 4. Warmup 小模型降级
-            if self.copilot_optimizer_config.warmup_downgrade && classification.is_warmup {
+            // 网关请求跳过：目录命中的 model 必须原样送达，不得被降级改写。
+            if !self.is_gateway
+                && self.copilot_optimizer_config.warmup_downgrade
+                && classification.is_warmup
+            {
                 log::info!(
                     "[Copilot] Warmup 请求降级到模型: {}",
                     self.copilot_optimizer_config.warmup_model
@@ -1547,7 +1593,11 @@ impl RequestForwarder {
             chat_body
         } else if codex_responses_to_anthropic {
             let mut mapped_body = mapped_body;
-            super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
+            // 网关请求跳过 upstream-model 覆盖：目录命中的 model 必须原样送达。
+            // 桥接本身（Responses→Anthropic）照常进行，只是不改模型名。
+            if !self.is_gateway {
+                super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
+            }
             // Per-provider output ceiling override. Codex does not forward its
             // `model_max_output_tokens` in the request body, so honor the value
             // configured on the provider here — it takes precedence over any

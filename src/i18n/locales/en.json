@@ -368,6 +368,10 @@
         "running": "Running",
         "stopped": "Stopped"
       },
+      "gateway": {
+        "title": "Local Gateway",
+        "description": "Expose an authenticated endpoint for third-party tools, without touching managed CLI configs"
+      },
       "connectivityCheck": {
         "title": "Connectivity Check Settings",
         "description": "Configure timeout, retries, and the slow-response threshold for provider reachability checks"
@@ -2981,6 +2985,54 @@
     "maxRetries": "Max Retries",
     "degradedThreshold": "Slow-response threshold (ms)",
     "error": "{{providerName}} check error: {{error}}"
+  },
+  "gateway": {
+    "enable": {
+      "title": "Enable Local Gateway",
+      "description": "Expose an additional set of authenticated /gateway/* endpoints for third-party tools. Does not modify any CLI configuration managed by CC Switch."
+    },
+    "needsRunning": "Start the local routing service first — the gateway endpoints only listen while it is running.",
+    "lanWarning": {
+      "title": "Listen address is not loopback — reachable from the LAN",
+      "body": "The gateway endpoints are token-protected, but /health, /status and all takeover routes on the same port are unauthenticated and expose your provider setup to the local network. Consider setting the listen address back to 127.0.0.1."
+    },
+    "token": {
+      "title": "Access Token",
+      "hint": "Third-party requests must send the header: Authorization: Bearer <token>",
+      "toggle": "Show/hide token",
+      "copied": "Token copied",
+      "rotate": "Rotate"
+    },
+    "provider": {
+      "pick": "Select a provider…",
+      "unset": "(not selected)",
+      "noneAvailable": "No providers configured for this app"
+    },
+    "catalog": {
+      "sourceLabel": "Source provider (fetch list / owns new entries)",
+      "fetchLabel": "Models fetched from this provider (check to expose)",
+      "selectAll": "Select all",
+      "fetching": "Fetching…",
+      "fetchFailed": "Fetch failed: {{error}}. You can add models manually below.",
+      "unknownError": "unknown error",
+      "fetchEmpty": "This provider returned no models — add them manually below.",
+      "manualLabel": "Add a model manually",
+      "manualPlaceholder": "model name, e.g. claude-opus-4-1",
+      "needSource": "Select a source provider first — every model must belong to one.",
+      "currentLabel": "Current catalog ({{count}})",
+      "clear": "Clear",
+      "emptyWarning": "Catalog is empty: every request to this endpoint returns 404.",
+      "remove": "Remove",
+      "unsaved": "Unsaved changes"
+    },
+    "baseUrl": {
+      "label": "Base URL",
+      "copied": "URL copied"
+    },
+    "toast": {
+      "tokenRotated": "Access token regenerated — the old token is now invalid",
+      "catalogSetFailed": "Failed to save gateway catalog: {{error}}"
+    }
   },
   "proxyConfig": {
     "proxyEnabled": "Routing Master Switch",

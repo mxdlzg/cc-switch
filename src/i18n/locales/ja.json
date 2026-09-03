@@ -368,6 +368,10 @@
         "running": "実行中",
         "stopped": "停止中"
       },
+      "gateway": {
+        "title": "ローカルゲートウェイ",
+        "description": "サードパーティツール向けに認証付きエンドポイントを公開、管理対象の CLI 設定は変更しません"
+      },
       "connectivityCheck": {
         "title": "接続チェック設定",
         "description": "プロバイダー接続チェックのタイムアウト、リトライ、低速判定しきい値を設定"
@@ -2981,6 +2985,54 @@
     "maxRetries": "最大リトライ回数",
     "degradedThreshold": "低速判定しきい値（ミリ秒）",
     "error": "{{providerName}} のチェックでエラーが発生しました: {{error}}"
+  },
+  "gateway": {
+    "enable": {
+      "title": "ローカルゲートウェイを有効化",
+      "description": "サードパーティツール向けに、認証付きの /gateway/* エンドポイントを追加で公開します。CC Switch が管理する CLI 設定は一切変更しません。"
+    },
+    "needsRunning": "まずローカルルーティングサービスを開始してください。ゲートウェイのエンドポイントはその稼働中のみリッスンします。",
+    "lanWarning": {
+      "title": "リッスンアドレスがループバックではありません — LAN からアクセス可能です",
+      "body": "ゲートウェイのエンドポイントはトークンで保護されていますが、同一ポート上の /health・/status・すべてのテイクオーバー経由のルートは認証なしで、プロバイダ構成をローカルネットワークに公開します。リッスンアドレスを 127.0.0.1 に戻すことを推奨します。"
+    },
+    "token": {
+      "title": "アクセストークン",
+      "hint": "サードパーティのリクエストはヘッダーに次を付ける必要があります: Authorization: Bearer <トークン>",
+      "toggle": "トークンを表示/非表示",
+      "copied": "トークンをコピーしました",
+      "rotate": "ローテート"
+    },
+    "provider": {
+      "pick": "プロバイダを選択…",
+      "unset": "（未選択）",
+      "noneAvailable": "このアプリに設定済みのプロバイダがありません"
+    },
+    "catalog": {
+      "sourceLabel": "モデルの取得元プロバイダ（一覧の取得 / 新規項目の所属）",
+      "fetchLabel": "このプロバイダから取得したモデル（チェックで公開）",
+      "selectAll": "すべて選択",
+      "fetching": "取得中…",
+      "fetchFailed": "取得に失敗：{{error}}。下で手動入力できます。",
+      "unknownError": "不明なエラー",
+      "fetchEmpty": "このプロバイダはモデルを返しませんでした。下で手動入力してください。",
+      "manualLabel": "モデルを手動で追加",
+      "manualPlaceholder": "モデル名（例: claude-opus-4-1）",
+      "needSource": "まず取得元プロバイダを選択してください。各モデルはいずれかのプロバイダに属します。",
+      "currentLabel": "現在のカタログ（{{count}}）",
+      "clear": "クリア",
+      "emptyWarning": "カタログが空です：このエンドポイントへのすべてのリクエストは 404 を返します。",
+      "remove": "削除",
+      "unsaved": "未保存の変更"
+    },
+    "baseUrl": {
+      "label": "Base URL",
+      "copied": "URL をコピーしました"
+    },
+    "toast": {
+      "tokenRotated": "アクセストークンを再生成しました。古いトークンはただち無効です",
+      "catalogSetFailed": "ゲートウェイカタログの保存に失敗：{{error}}"
+    }
   },
   "proxyConfig": {
     "proxyEnabled": "ルーティング総スイッチ",

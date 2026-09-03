@@ -368,6 +368,10 @@
         "running": "執行中",
         "stopped": "已停止"
       },
+      "gateway": {
+        "title": "本機閘道",
+        "description": "為第三方工具暴露帶驗證的端點，不改動受管 CLI 的設定"
+      },
       "connectivityCheck": {
         "title": "連通檢測設定",
         "description": "設定供應商位址探測的逾時、重試與緩慢閾值"
@@ -2982,6 +2986,54 @@
     "maxRetries": "最大重試次數",
     "degradedThreshold": "緩慢閾值（毫秒）",
     "error": "{{providerName}} 檢查出錯：{{error}}"
+  },
+  "gateway": {
+    "enable": {
+      "title": "啟用本機閘道",
+      "description": "額外暴露一組帶驗證的 /gateway/* 端點供第三方工具使用。不會改動任何被 CC Switch 管理的 CLI 設定。"
+    },
+    "needsRunning": "需要先啟動本機路由服務，閘道端點才會開始監聽。",
+    "lanWarning": {
+      "title": "監聽位址不是環回位址，區網內可存取",
+      "body": "閘道端點有權杖保護，但同一連接埠上的 /health、/status 及各接管路由均無驗證，會向區網暴露供應商資訊。建議把監聽位址改回 127.0.0.1。"
+    },
+    "token": {
+      "title": "存取權杖",
+      "hint": "第三方請求需在標頭攜帶：Authorization: Bearer <權杖>",
+      "toggle": "顯示/隱藏權杖",
+      "copied": "權杖已複製",
+      "rotate": "輪換"
+    },
+    "provider": {
+      "pick": "選擇供應商…",
+      "unset": "（未選擇）",
+      "noneAvailable": "該應用程式下還沒有供應商"
+    },
+    "catalog": {
+      "sourceLabel": "模型來源供應商（用於拉取清單 / 歸屬新條目）",
+      "fetchLabel": "從該供應商拉取的模型（勾選以暴露）",
+      "selectAll": "全選",
+      "fetching": "正在拉取…",
+      "fetchFailed": "拉取失敗：{{error}}。可在下方手動填寫模型名。",
+      "unknownError": "未知錯誤",
+      "fetchEmpty": "該供應商未回傳模型清單，可在下方手動填寫。",
+      "manualLabel": "手動新增模型",
+      "manualPlaceholder": "模型名，如 claude-opus-4-1",
+      "needSource": "先選擇來源供應商，每個模型都要歸屬一個供應商。",
+      "currentLabel": "目前目錄（{{count}}）",
+      "clear": "清空",
+      "emptyWarning": "目錄為空：該端點所有請求都會回傳 404。",
+      "remove": "移除",
+      "unsaved": "有未儲存的變更"
+    },
+    "baseUrl": {
+      "label": "Base URL",
+      "copied": "位址已複製"
+    },
+    "toast": {
+      "tokenRotated": "存取權杖已重新產生，舊權杖立即失效",
+      "catalogSetFailed": "儲存閘道模型目錄失敗：{{error}}"
+    }
   },
   "proxyConfig": {
     "proxyEnabled": "路由總開關",

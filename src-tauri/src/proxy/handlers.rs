@@ -15,7 +15,7 @@ use super::{
         claude_stream_usage_event_filter, codex_stream_usage_event_filter, CLAUDE_PARSER_CONFIG,
         CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
     },
-    handler_context::RequestContext,
+    handler_context::{extract_gemini_model_from_path, ProviderSelection, RequestContext},
     providers::{
         codex_chat_common::extract_reasoning_field_text,
         codex_chat_history::record_responses_sse_stream,
@@ -57,6 +57,10 @@ use serde_json::{json, Value};
 // ============================================================================
 // 健康检查和状态查询（简单端点）
 // ============================================================================
+
+/// `/gateway/gemini` 前缀。Gemini 的 endpoint 需要带着 query 原样转发，
+/// 因此不像其它 handler 那样用常量 endpoint，必须手工剥掉这段前缀。
+const GATEWAY_GEMINI_PREFIX: &str = "/gateway/gemini";
 
 /// 健康检查
 pub async fn health_check() -> (StatusCode, Json<Value>) {
@@ -128,7 +132,40 @@ pub async fn handle_messages(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
-    handle_messages_for_app(state, request, AppType::Claude, "Claude", "claude", None).await
+    handle_messages_for_app(
+        state,
+        request,
+        AppType::Claude,
+        "Claude",
+        "claude",
+        None,
+        ProviderSelection::AppCurrent,
+    )
+    .await
+}
+
+/// `/gateway/claude/v1/messages` —— 第三方工具接入的 Anthropic Messages 入口。
+///
+/// 与 `/v1/messages` 的两点区别：必须携带有效的 `Authorization: Bearer <token>`；
+/// 供应商来自本 namespace 的**模型目录**（`body["model"]` 命中目录 → 该 model 指定
+/// 的 provider；未命中 → 404），不受首页当前供应商影响。
+pub async fn handle_gateway_claude_messages(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    validate_gateway_auth(&state, request.headers())?;
+    handle_messages_for_app(
+        state,
+        request,
+        AppType::Claude,
+        "Claude",
+        "claude",
+        Some("/gateway/claude"),
+        ProviderSelection::GatewayByModel {
+            model_from_uri: None,
+        },
+    )
+    .await
 }
 
 pub async fn handle_claude_desktop_messages(
@@ -143,6 +180,7 @@ pub async fn handle_claude_desktop_messages(
         "Claude Desktop",
         "claude-desktop",
         Some("/claude-desktop"),
+        ProviderSelection::AppCurrent,
     )
     .await
 }
@@ -163,13 +201,110 @@ pub async fn handle_claude_desktop_models(
     Ok(Json(response))
 }
 
-async fn handle_messages_for_app(
+/// 网关 `/models` 目录端点：把某个 namespace 的模型目录按方言暴露给客户端。
+///
+/// 三条薄封装（OpenAI 形 / Anthropic 形 / Gemini 形）共用这一个读取 + 鉴权：
+/// 目录里有哪些 model，这里就列哪些；目录为空则返回空列表（与路由侧"空目录
+/// 一律 404"一致——没有可暴露的模型，也就没有可列的模型）。
+///
+/// 静态段路由优先于 `/gateway/gemini/v1beta/*path` 的 catch-all（matchit 匹配
+/// 优先级），因此 `/models` 不会被当成 Gemini 转发请求。
+async fn gateway_catalog_models(
+    state: &ProxyState,
+    headers: &axum::http::HeaderMap,
+    namespace: AppType,
+) -> Result<Vec<String>, ProxyError> {
+    validate_gateway_auth(state, headers)?;
+    let catalog = crate::services::gateway::get_gateway_catalog(state.db.as_ref(), &namespace)
+        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+    Ok(catalog.into_iter().map(|entry| entry.model).collect())
+}
+
+/// codex / grokbuild：OpenAI `/v1/models` 形 `{object:"list",data:[{id,object:"model"}]}`。
+async fn handle_gateway_models_openai(
+    state: &ProxyState,
+    headers: &axum::http::HeaderMap,
+    namespace: AppType,
+) -> Result<Json<Value>, ProxyError> {
+    let models = gateway_catalog_models(state, headers, namespace).await?;
+    let data: Vec<Value> = models
+        .into_iter()
+        .map(|id| json!({ "id": id, "object": "model" }))
+        .collect();
+    Ok(Json(json!({ "object": "list", "data": data })))
+}
+
+/// claude：Anthropic `/v1/models` 形 `{data:[{type:"model",id}],has_more,...}`。
+async fn handle_gateway_models_anthropic(
+    state: &ProxyState,
+    headers: &axum::http::HeaderMap,
+) -> Result<Json<Value>, ProxyError> {
+    let models = gateway_catalog_models(state, headers, AppType::Claude).await?;
+    let data: Vec<Value> = models
+        .into_iter()
+        .map(|id| json!({ "type": "model", "id": id }))
+        .collect();
+    let first_id = data.first().and_then(|i| i.get("id")).and_then(Value::as_str);
+    let last_id = data.last().and_then(|i| i.get("id")).and_then(Value::as_str);
+    Ok(Json(json!({
+        "data": data,
+        "has_more": false,
+        "first_id": first_id,
+        "last_id": last_id,
+    })))
+}
+
+/// gemini：`{models:[{name:"models/<id>"}]}`。
+async fn handle_gateway_models_gemini(
+    state: &ProxyState,
+    headers: &axum::http::HeaderMap,
+) -> Result<Json<Value>, ProxyError> {
+    let models = gateway_catalog_models(state, headers, AppType::Gemini).await?;
+    let list: Vec<Value> = models
+        .into_iter()
+        .map(|id| json!({ "name": format!("models/{id}") }))
+        .collect();
+    Ok(Json(json!({ "models": list })))
+}
+
+/// 路由入口：`GET /gateway/codex/v1/models`。
+pub async fn handle_gateway_codex_models(
+    State(state): State<ProxyState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, ProxyError> {
+    handle_gateway_models_openai(&state, &headers, AppType::Codex).await
+}
+
+/// 路由入口：`GET /gateway/grokbuild/v1/models`。
+pub async fn handle_gateway_grokbuild_models(
+    State(state): State<ProxyState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, ProxyError> {
+    handle_gateway_models_openai(&state, &headers, AppType::GrokBuild).await
+}
+
+/// 路由入口：`GET /gateway/claude/v1/models`。
+pub async fn handle_gateway_claude_models(
+    State(state): State<ProxyState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, ProxyError> {
+    handle_gateway_models_anthropic(&state, &headers).await
+}
+
+/// 路由入口：`GET /gateway/gemini/v1beta/models`（及 `/v1/models`）。
+pub async fn handle_gateway_gemini_models(
+    State(state): State<ProxyState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, ProxyError> {
+    handle_gateway_models_gemini(&state, &headers).await
+}
     state: ProxyState,
     request: axum::extract::Request,
     app_type: AppType,
     tag: &'static str,
     app_type_str: &'static str,
     strip_prefix: Option<&'static str>,
+    selection: ProviderSelection,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, body) = request.into_parts();
     let method = parts.method.clone();
@@ -184,8 +319,16 @@ async fn handle_messages_for_app(
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        app_type.clone(),
+        tag,
+        app_type_str,
+        selection,
+    )
+    .await?;
 
     let raw_endpoint = uri
         .path_and_query()
@@ -274,10 +417,25 @@ fn validate_claude_desktop_gateway_auth(
 ) -> Result<(), ProxyError> {
     let expected = crate::claude_desktop_config::get_or_create_gateway_token(state.db.as_ref())
         .map_err(|e| ProxyError::AuthError(e.to_string()))?;
-    let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
+    let token = extract_bearer_token(headers, "Claude Desktop gateway")?;
+    if token != expected {
         return Err(ProxyError::AuthError(
-            "Claude Desktop gateway 缺少 Authorization 头".to_string(),
+            "Claude Desktop gateway token 无效".to_string(),
         ));
+    }
+    Ok(())
+}
+
+/// 从 `Authorization` 头取出 Bearer token。
+///
+/// 缺头 / 头值非 ASCII 视为鉴权失败；scheme 不匹配时返回空串，由调用方的
+/// 比对逻辑拒绝（令牌长度固定，空串必然长度不等 → 必然 401）。
+fn extract_bearer_token(
+    headers: &axum::http::HeaderMap,
+    missing_label: &str,
+) -> Result<String, ProxyError> {
+    let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
+        return Err(ProxyError::AuthError(format!("{missing_label} 缺少 Authorization 头")));
     };
     let value = value
         .to_str()
@@ -287,10 +445,31 @@ fn validate_claude_desktop_gateway_auth(
         .or_else(|| value.strip_prefix("bearer "))
         .unwrap_or("")
         .trim();
-    if token != expected {
-        return Err(ProxyError::AuthError(
-            "Claude Desktop gateway token 无效".to_string(),
-        ));
+    Ok(token.to_string())
+}
+
+/// `/gateway/*` 端点的访问校验。
+///
+/// 与 Claude Desktop gateway 的差别只有两点：独立的令牌，以及**常数时间比较**
+/// （网关定位是对第三方工具暴露，不应留下计时侧信道）。
+fn validate_gateway_auth(
+    state: &ProxyState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), ProxyError> {
+    // 网关被关闭时，对所有 `/gateway/*` 请求一律返回 401（与令牌无效同码，
+    // 不区分——避免让外部探测到"网关存在但被关掉"）。
+    if !crate::services::gateway::is_gateway_enabled(state.db.as_ref())
+        .map_err(|e| ProxyError::AuthError(e.to_string()))?
+    {
+        return Err(ProxyError::AuthError("gateway 未启用".to_string()));
+    }
+
+    let expected = crate::services::gateway::get_or_create_gateway_token(state.db.as_ref())
+        .map_err(|e| ProxyError::AuthError(e.to_string()))?;
+    let token = extract_bearer_token(headers, "gateway")?;
+
+    if !crate::services::gateway::constant_time_eq(&token, &expected) {
+        return Err(ProxyError::AuthError("gateway token 无效".to_string()));
     }
     Ok(())
 }
@@ -763,6 +942,33 @@ pub async fn handle_chat_completions(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
+    handle_chat_completions_for_app(state, request, ProviderSelection::AppCurrent).await
+}
+
+/// `/gateway/codex/v1/chat/completions` —— 第三方工具用 OpenAI Chat 方言接入。
+///
+/// 供应商来自 codex namespace 的模型目录；命中的 provider 若只支持 Anthropic，
+/// 转发层的 Chat→Anthropic 转换会照常生效（`handle_messages` 侧的镜像逻辑）。
+pub async fn handle_gateway_codex_chat(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    validate_gateway_auth(&state, request.headers())?;
+    handle_chat_completions_for_app(
+        state,
+        request,
+        ProviderSelection::GatewayByModel {
+            model_from_uri: None,
+        },
+    )
+    .await
+}
+
+async fn handle_chat_completions_for_app(
+    state: ProxyState,
+    request: axum::extract::Request,
+    selection: ProviderSelection,
+) -> Result<axum::response::Response, ProxyError> {
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
     let uri = parts.uri;
@@ -777,8 +983,17 @@ pub async fn handle_chat_completions(
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        AppType::Codex,
+        "Codex",
+        "codex",
+        selection,
+    )
+    .await?;
+    // 网关前缀不进 endpoint：这里 endpoint 是常量 + query，本就不含路径前缀。
     let endpoint = endpoint_with_query(&uri, "/chat/completions");
 
     let is_stream = body
@@ -829,7 +1044,55 @@ pub async fn handle_responses(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
-    handle_responses_for_app(state, request, AppType::Codex, "Codex", "codex").await
+    handle_responses_for_app(
+        state,
+        request,
+        AppType::Codex,
+        "Codex",
+        "codex",
+        ProviderSelection::AppCurrent,
+    )
+    .await
+}
+
+/// `/gateway/codex/v1/responses` —— 第三方工具用 OpenAI Responses 方言接入。
+///
+/// 供应商来自 codex namespace 的模型目录（`body["model"]` 命中 → 对应 provider）。
+pub async fn handle_gateway_codex_responses(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    validate_gateway_auth(&state, request.headers())?;
+    handle_responses_for_app(
+        state,
+        request,
+        AppType::Codex,
+        "Codex",
+        "codex",
+        ProviderSelection::GatewayByModel {
+            model_from_uri: None,
+        },
+    )
+    .await
+}
+
+/// `/gateway/grokbuild/v1/responses` —— Grok Build 方言的网关入口。
+pub async fn handle_gateway_grokbuild_responses(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    validate_gateway_auth(&state, request.headers())?;
+    handle_responses_for_app(
+        state,
+        request,
+        AppType::GrokBuild,
+        "Grok Build",
+        "grokbuild",
+        ProviderSelection::GatewayByModel {
+            model_from_uri: None,
+        },
+    )
+    .await
 }
 
 pub async fn handle_grokbuild_responses(
@@ -842,6 +1105,7 @@ pub async fn handle_grokbuild_responses(
         AppType::GrokBuild,
         "Grok Build",
         "grokbuild",
+        ProviderSelection::AppCurrent,
     )
     .await
 }
@@ -852,6 +1116,7 @@ async fn handle_responses_for_app(
     app_type: AppType,
     tag: &'static str,
     app_type_str: &'static str,
+    selection: ProviderSelection,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
@@ -867,8 +1132,16 @@ async fn handle_responses_for_app(
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        app_type.clone(),
+        tag,
+        app_type_str,
+        selection,
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, "/responses");
 
     let is_stream = body
@@ -989,8 +1262,16 @@ pub async fn handle_alpha_search(
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::InvalidRequest(format!("Failed to parse request body: {e}")))?;
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        AppType::Codex,
+        "Codex",
+        "codex",
+        ProviderSelection::AppCurrent,
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, "/alpha/search");
 
     let forwarder = ctx.create_forwarder(&state);
@@ -1065,8 +1346,17 @@ async fn handle_responses_compact_for_app(
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        app_type.clone(),
+        tag,
+        app_type_str,
+        // 远程压缩是 Codex CLI 专属能力，不对外暴露为网关端点。
+        ProviderSelection::AppCurrent,
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, "/responses/compact");
 
     let is_stream = body
@@ -2051,6 +2341,44 @@ pub async fn handle_gemini(
     uri: axum::http::Uri,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
+    handle_gemini_for_app(state, uri, request, ProviderSelection::AppCurrent).await
+}
+
+/// `/gateway/gemini/v1beta/*` —— 网关侧 Gemini 入口。
+///
+/// 与普通入口的区别：**先过 `validate_gateway_auth`**（此前该路由漏了鉴权，是
+/// 一个未授权访问漏洞，现已补齐），供应商来自 gemini namespace 的模型目录，
+/// 且请求被标记为网关流量（不写接管侧状态）。`/gateway/gemini` 前缀在拼
+/// endpoint 时剥掉。
+///
+/// Gemini 的模型名在 URI 而非 body，故在选 provider 前先用
+/// `extract_gemini_model_from_path` 解析出来（它按 `models` 段定位，网关前缀
+/// 不影响解析）。取不到模型名（如 `GET /v1beta/models` 列表端点）时传 None，
+/// 由 `RequestContext::new` 返回 400——路由必须按 model 匹配，没 model 无从匹配。
+pub async fn handle_gateway_gemini(
+    State(state): State<ProxyState>,
+    uri: axum::http::Uri,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    validate_gateway_auth(&state, request.headers())?;
+    let model_from_uri = extract_gemini_model_from_path(uri.path());
+    handle_gemini_for_app(
+        state,
+        uri,
+        request,
+        ProviderSelection::GatewayByModel { model_from_uri },
+    )
+    .await
+}
+
+async fn handle_gemini_for_app(
+    state: ProxyState,
+    uri: axum::http::Uri,
+    request: axum::extract::Request,
+    selection: ProviderSelection,
+) -> Result<axum::response::Response, ProxyError> {
+    let is_gateway = matches!(selection, ProviderSelection::GatewayByModel { .. });
+
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
     let headers = parts.headers;
@@ -2069,16 +2397,34 @@ pub async fn handle_gemini(
             .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?
     };
 
-    // Gemini 的模型名称在 URI 中
-    let mut ctx = RequestContext::new(&state, &body, &headers, AppType::Gemini, "Gemini", "gemini")
-        .await?
-        .with_model_from_uri(&uri);
+    // Gemini 的模型名称在 URI 中。
+    //
+    // `extract_gemini_model_from_path` 按 `models` 段定位，网关前缀不影响解析；
+    // 但 endpoint 必须剥掉前缀，否则 `/gateway/gemini` 会被一起发给上游 → 404。
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        AppType::Gemini,
+        "Gemini",
+        "gemini",
+        selection,
+    )
+    .await?
+    .with_model_from_uri(&uri);
 
     // 提取完整的路径和查询参数
-    let endpoint = uri
+    let raw_endpoint = uri
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or(uri.path());
+    let endpoint = if is_gateway {
+        raw_endpoint
+            .strip_prefix(GATEWAY_GEMINI_PREFIX)
+            .unwrap_or(raw_endpoint)
+    } else {
+        raw_endpoint
+    };
 
     let is_stream = body
         .get("stream")

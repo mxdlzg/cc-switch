@@ -368,6 +368,10 @@
         "running": "运行中",
         "stopped": "已停止"
       },
+      "gateway": {
+        "title": "本地网关",
+        "description": "为第三方工具暴露带鉴权的端点，不改动受管 CLI 的配置"
+      },
       "connectivityCheck": {
         "title": "连通检测配置",
         "description": "配置供应商地址探测的超时、重试和较慢阈值"
@@ -2981,6 +2985,54 @@
     "maxRetries": "最大重试次数",
     "degradedThreshold": "较慢阈值（毫秒）",
     "error": "{{providerName}} 检查出错: {{error}}"
+  },
+  "gateway": {
+    "enable": {
+      "title": "启用本地网关",
+      "description": "额外暴露一组带鉴权的 /gateway/* 端点供第三方工具使用。不会改动任何被 CC Switch 管理的 CLI 配置。"
+    },
+    "needsRunning": "需要先启动本地路由服务，网关端点才会开始监听。",
+    "lanWarning": {
+      "title": "监听地址不是环回地址，局域网内可访问",
+      "body": "网关端点有令牌保护，但同一端口上的 /health、/status 及各接管路由均无鉴权，会向局域网暴露供应商信息。建议把监听地址改回 127.0.0.1。"
+    },
+    "token": {
+      "title": "访问令牌",
+      "hint": "第三方请求需在请求头携带：Authorization: Bearer <令牌>",
+      "toggle": "显示/隐藏令牌",
+      "copied": "令牌已复制",
+      "rotate": "轮换"
+    },
+    "provider": {
+      "pick": "选择供应商…",
+      "unset": "（未选择）",
+      "noneAvailable": "该应用下还没有供应商"
+    },
+    "catalog": {
+      "sourceLabel": "模型来源供应商（用于拉取列表 / 归属新条目）",
+      "fetchLabel": "从该供应商拉取的模型（勾选以暴露）",
+      "selectAll": "全选",
+      "fetching": "正在拉取…",
+      "fetchFailed": "拉取失败：{{error}}。可在下方手动填写模型名。",
+      "unknownError": "未知错误",
+      "fetchEmpty": "该供应商未返回模型列表，可在下方手动填写。",
+      "manualLabel": "手动添加模型",
+      "manualPlaceholder": "模型名，如 claude-opus-4-1",
+      "needSource": "先选择来源供应商，每个模型都要归属一个供应商。",
+      "currentLabel": "当前目录（{{count}}）",
+      "clear": "清空",
+      "emptyWarning": "目录为空：该端点所有请求都会返回 404。",
+      "remove": "移除",
+      "unsaved": "有未保存的改动"
+    },
+    "baseUrl": {
+      "label": "Base URL",
+      "copied": "地址已复制"
+    },
+    "toast": {
+      "tokenRotated": "访问令牌已重新生成，旧令牌立即失效",
+      "catalogSetFailed": "保存网关模型目录失败：{{error}}"
+    }
   },
   "proxyConfig": {
     "proxyEnabled": "路由总开关",

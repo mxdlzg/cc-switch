@@ -12,7 +12,9 @@ use crate::proxy::{
     ProxyError,
 };
 use axum::http::HeaderMap;
+use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::RwLock;
 
 /// 流式超时配置
 #[derive(Debug, Clone, Copy)]
@@ -70,6 +72,34 @@ pub struct RequestContext {
     pub optimizer_config: OptimizerConfig,
     /// Copilot 优化器配置
     pub copilot_optimizer_config: CopilotOptimizerConfig,
+    /// 本请求来自 `/gateway/*`（第三方工具接入端点）。
+    ///
+    /// 见 `RequestForwarder::is_gateway`：网关请求不得产生接管侧副作用
+    /// （健康度、熔断器、UI/托盘同步、Live 文件）。
+    pub is_gateway: bool,
+}
+
+/// Provider 选择来源。
+///
+/// 用枚举而非 `Option<Provider>` + `bool` 两个参数：两者的组合中
+/// "非网关但指定了 provider" 没有合法语义，枚举让它不可表示。
+#[derive(Debug, Clone)]
+pub enum ProviderSelection {
+    /// 普通流量：走该 app 的 current provider / 故障转移队列 + 熔断器。
+    AppCurrent,
+    /// `/gateway/*` 流量：按请求模型查该 namespace 的模型目录选 provider。
+    ///
+    /// namespace 即 `RequestContext::new` 收到的 `app_type`（入口层保证二者一致），
+    /// 因此这里不重复携带，杜绝"namespace 与 app_type 不一致"的错配。
+    ///
+    /// 解析结果永远是单元素链路、不查熔断器、不走故障转移队列——与接管侧完全
+    /// 隔离，首页切换供应商不影响网关，反之亦然。未命中目录 → 404（严格模式，
+    /// 不回落该 app 的当前供应商）。
+    GatewayByModel {
+        /// Gemini 的模型名在 URI 而非 body，由入口先行解析传入；
+        /// 其余方言传 None，由 `RequestContext::new` 从 `body["model"]` 读取。
+        model_from_uri: Option<String>,
+    },
 }
 
 impl RequestContext {
@@ -82,9 +112,11 @@ impl RequestContext {
     /// * `app_type` - 应用类型
     /// * `tag` - 日志标签
     /// * `app_type_str` - 应用类型字符串
+    /// * `selection` - Provider 选择来源（普通流量 / 网关指定供应商）
     ///
     /// # Errors
     /// 返回 `ProxyError` 如果 Provider 选择失败
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         state: &ProxyState,
         body: &serde_json::Value,
@@ -92,6 +124,7 @@ impl RequestContext {
         app_type: AppType,
         tag: &'static str,
         app_type_str: &'static str,
+        selection: ProviderSelection,
     ) -> Result<Self, ProxyError> {
         let start_time = Instant::now();
 
@@ -116,7 +149,6 @@ impl RequestContext {
             .and_then(|m| m.as_str())
             .unwrap_or("unknown")
             .to_string();
-
         // 提取 Session ID
         let session_result = extract_session_id(headers, body, app_type_str);
         let session_id = session_result.session_id.clone();
@@ -129,19 +161,72 @@ impl RequestContext {
             session_result.client_provided
         );
 
-        // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
-        // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
-        let providers = state
-            .provider_router
-            .select_providers(app_type_str)
-            .await
-            .map_err(|e| match e {
-                crate::error::AppError::AllProvidersCircuitOpen => {
-                    ProxyError::AllProvidersCircuitOpen
+        let is_gateway = matches!(selection, ProviderSelection::GatewayByModel { .. });
+
+        let (providers, current_provider_id, request_model) = match selection {
+            // 网关：按请求模型查该 namespace 的模型目录选供应商。
+            //
+            // 模型名来源：Gemini 在 URI（入口已解析传入），其余方言在 body。
+            // 两处都取不到模型名（如 Gemini 的 `GET /v1beta/models` 列表端点）时
+            // 不能路由——目录按 model 匹配，没有 model 就无从匹配，直接 400。
+            //
+            // 命中目录后 `current_provider_id` 被设为该供应商自身，使 forwarder 里的
+            // `should_switch`（`current_provider_id_at_start != provider.id`）恒为
+            // false —— 从而不会触发 `failover_manager.try_switch`
+            // → `hot_switch_provider` → 写 Live 配置文件的链路。
+            //
+            // 供应商健康度/熔断器另由 `RequestForwarder::is_gateway` 屏蔽。
+            ProviderSelection::GatewayByModel { model_from_uri } => {
+                let model = model_from_uri
+                    .or_else(|| {
+                        body.get("model")
+                            .and_then(|m| m.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                    })
+                    .ok_or_else(|| {
+                        ProxyError::ConfigError("网关请求未携带模型名".to_string())
+                    })?;
+
+                let provider = crate::services::gateway::resolve_gateway_provider(
+                    state.db.as_ref(),
+                    &app_type,
+                    &model,
+                )
+                .map_err(|e| ProxyError::DatabaseError(e.to_string()))?
+                .ok_or_else(|| ProxyError::ModelNotFound(model.clone()))?;
+
+                // 目录命中的模型名就是本次请求的模型名，比 request_model
+                // （可能回落到 "unknown"）更准确，用它做日志与 usage 归因。
+                let id = provider.id.clone();
+                (vec![provider], id, model)
+            }
+            // 普通流量：走该 app 的 current provider / 故障转移队列 + 熔断器。
+            //
+            // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
+            ProviderSelection::AppCurrent => {
+                let providers = state
+                    .provider_router
+                    .select_providers(app_type_str)
+                    .await
+                    .map_err(|e| match e {
+                        crate::error::AppError::AllProvidersCircuitOpen => {
+                            ProxyError::AllProvidersCircuitOpen
+                        }
+                        crate::error::AppError::NoProvidersConfigured => {
+                            ProxyError::NoProvidersConfigured
+                        }
+                        _ => ProxyError::DatabaseError(e.to_string()),
+                    })?;
+
+                if providers.is_empty() {
+                    return Err(ProxyError::NoAvailableProvider);
                 }
-                crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
-                _ => ProxyError::DatabaseError(e.to_string()),
-            })?;
+
+                (providers, current_provider_id, request_model)
+            }
+        };
 
         let provider = providers
             .first()
@@ -173,6 +258,7 @@ impl RequestContext {
             rectifier_config,
             optimizer_config,
             copilot_optimizer_config,
+            is_gateway,
         })
     }
 
@@ -223,11 +309,22 @@ impl RequestContext {
             0
         };
 
+        // 网关请求写一个一次性的 current_providers map。
+        //
+        // 不能传 `state.current_providers.clone()`：那是 `Arc` 克隆，写进去的就是
+        // 共享状态，会经 `active_targets` 反映到首页「当前供应商」高亮
+        // （见 `ProviderCard.tsx` 的 `activeProviderId` 分支）。
+        let current_providers = if self.is_gateway {
+            Arc::new(RwLock::new(std::collections::HashMap::new()))
+        } else {
+            state.current_providers.clone()
+        };
+
         RequestForwarder::new(
             state.provider_router.clone(),
             non_streaming_timeout,
             state.status.clone(),
-            state.current_providers.clone(),
+            current_providers,
             state.gemini_shadow.clone(),
             state.codex_chat_history.clone(),
             state.failover_manager.clone(),
@@ -241,6 +338,7 @@ impl RequestContext {
             self.optimizer_config.clone(),
             self.copilot_optimizer_config.clone(),
             max_retries,
+            self.is_gateway,
         )
     }
 
