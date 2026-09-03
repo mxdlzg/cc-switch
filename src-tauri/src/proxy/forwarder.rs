@@ -3830,6 +3830,8 @@ mod tests {
             non_streaming_timeout,
             streaming_first_byte_timeout,
             max_attempts: 1,
+            // 测试构造的都是接管侧流量，不是网关请求。
+            is_gateway: false,
         }
     }
 
