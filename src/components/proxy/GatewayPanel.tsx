@@ -45,10 +45,7 @@ import type {
   GatewayNamespaceInfo,
   GatewayProviderOption,
 } from "@/lib/api/gateway";
-import {
-  useProxyStatusQuery,
-  useGlobalProxyConfig,
-} from "@/lib/query/proxy";
+import { useProxyStatusQuery, useGlobalProxyConfig } from "@/lib/query/proxy";
 
 /**
  * 本地网关设置面板。
@@ -292,9 +289,10 @@ function NamespaceCatalog({
               {t("gateway.catalog.fetchFailed", {
                 error:
                   (modelsQuery.error as Error)?.message ??
-                  t("gateway.catalog.unknownError", { defaultValue: "未知错误" }),
-                defaultValue:
-                  "拉取失败：{{error}}。可在下方手动填写模型名。",
+                  t("gateway.catalog.unknownError", {
+                    defaultValue: "未知错误",
+                  }),
+                defaultValue: "拉取失败：{{error}}。可在下方手动填写模型名。",
               })}
             </p>
           ) : fetchedModels.length === 0 ? (
@@ -313,9 +311,7 @@ function NamespaceCatalog({
                   >
                     <Checkbox
                       checked={draftModels.has(m.id)}
-                      onCheckedChange={(checked) =>
-                        toggleModel(m.id, checked)
-                      }
+                      onCheckedChange={(checked) => toggleModel(m.id, checked)}
                     />
                     <span className="font-mono text-xs truncate">{m.id}</span>
                   </label>
@@ -351,8 +347,11 @@ function NamespaceCatalog({
             size="sm"
             variant="outline"
             onClick={addManual}
-            disabled={!sourceProviderId || !manualModel.trim() ||
-              draftModels.has(manualModel.trim())}
+            disabled={
+              !sourceProviderId ||
+              !manualModel.trim() ||
+              draftModels.has(manualModel.trim())
+            }
           >
             <Plus className="mr-1.5 h-4 w-4" />
             {t("common.add", { defaultValue: "添加" })}
@@ -488,7 +487,9 @@ export function GatewayPanel() {
       : globalConfig
         ? { address: globalConfig.listenAddress, port: globalConfig.listenPort }
         : null;
-  const origin = effective ? formatAddressForUrl(effective.address, effective.port) : "";
+  const origin = effective
+    ? formatAddressForUrl(effective.address, effective.port)
+    : "";
 
   const { data: info, isLoading } = useGatewayInfo();
   const { data: options = [] } = useGatewayProviderOptions();
