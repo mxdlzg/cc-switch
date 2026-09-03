@@ -94,6 +94,8 @@ const renderCopilotForm = (overrides: Partial<ClaudeFormFieldsProps> = {}) => {
     onApiKeyFieldChange: vi.fn(),
     isFullUrl: false,
     onFullUrlChange: vi.fn(),
+    hoistSystemToHead: false,
+    onHoistSystemToHeadChange: vi.fn(),
     customUserAgent: "",
     onCustomUserAgentChange: vi.fn(),
     localProxyHeadersOverride: "",
@@ -194,5 +196,34 @@ describe("ClaudeFormFields", () => {
       "CLAUDE_CODE_SUBAGENT_MODEL",
       "shared-model[1M]",
     );
+  });
+
+  it("严格上游开关仅在 Chat / Responses 转换格式下显示", () => {
+    // claudeModel 让高级区默认展开，避免"因为折叠所以看不到"的假阳性；
+    // 原生 Anthropic 格式不转换消息，开关无处生效 → 展开后仍不应出现。
+    const { unmount } = renderCopilotForm({
+      apiFormat: "anthropic",
+      claudeModel: "claude-sonnet",
+    });
+    expect(screen.getByText("上游格式")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "把系统消息上提到开头" }),
+    ).not.toBeInTheDocument();
+    unmount();
+
+    const onHoistSystemToHeadChange = vi.fn();
+    renderCopilotForm({
+      apiFormat: "openai_chat",
+      hoistSystemToHead: true,
+      onHoistSystemToHeadChange,
+    });
+
+    const toggle = screen.getByRole("switch", {
+      name: "把系统消息上提到开头",
+    });
+    expect(toggle).toBeChecked();
+
+    fireEvent.click(toggle);
+    expect(onHoistSystemToHeadChange).toHaveBeenCalledWith(false);
   });
 });
