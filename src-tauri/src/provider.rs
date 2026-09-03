@@ -549,10 +549,7 @@ pub struct ProviderMeta {
     ///
     /// 与上游 d8065cc 之前 v3.20.1 的行为一致；作为 provider 级开关默认关闭，
     /// 只对确认「上游严格但注入的 system 内容稳定」的供应商开启，缓存不受影响。
-    #[serde(
-        rename = "hoistSystemToHead",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "hoistSystemToHead", skip_serializing_if = "Option::is_none")]
     pub hoist_system_to_head: Option<bool>,
     /// Codex → Anthropic path: override the Anthropic `max_tokens` (output ceiling).
     ///

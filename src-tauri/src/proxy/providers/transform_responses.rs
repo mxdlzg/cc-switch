@@ -5378,9 +5378,7 @@ mod tests {
         );
         let input = result["input"].as_array().unwrap();
         assert_eq!(input.len(), 2);
-        assert!(input
-            .iter()
-            .all(|item| item["role"] != json!("system")));
+        assert!(input.iter().all(|item| item["role"] != json!("system")));
     }
 
     #[test]
