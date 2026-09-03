@@ -2305,6 +2305,9 @@ fn codex_proxy_error_code(error: &ProxyError) -> &'static str {
         ProxyError::ConfigError(_) => "cc_switch_config_error",
         ProxyError::TransformError(_) => "cc_switch_transform_error",
         ProxyError::InvalidRequest(_) => "cc_switch_invalid_request",
+        // 网关目录未命中该 model（HTTP 404）：与「配置错误」「请求非法」都不同，
+        // 单列一个 code，客户端据此区分"换个模型名再试"和"请求本身有问题"。
+        ProxyError::ModelNotFound(_) => "cc_switch_model_not_found",
         ProxyError::AuthError(_) => "cc_switch_auth_error",
         ProxyError::UpstreamError { .. } => "cc_switch_upstream_error",
         ProxyError::DatabaseError(_) => "cc_switch_database_error",
