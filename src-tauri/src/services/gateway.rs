@@ -166,7 +166,7 @@ pub fn set_gateway_catalog(
                 "Model name must not be empty",
             ));
         }
-        if seen.iter().any(|existing| *existing == model) {
+        if seen.contains(&model) {
             return Err(AppError::localized(
                 "gateway.catalog.duplicate_model",
                 "模型名重复",
