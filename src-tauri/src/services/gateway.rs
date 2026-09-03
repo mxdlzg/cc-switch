@@ -84,7 +84,10 @@ pub fn is_gateway_enabled(db: &Database) -> Result<bool, AppError> {
 
 /// 设置网关总开关。
 pub fn set_gateway_enabled(db: &Database, enabled: bool) -> Result<(), AppError> {
-    db.set_setting(GATEWAY_ENABLED_SETTING_KEY, if enabled { "true" } else { "false" })
+    db.set_setting(
+        GATEWAY_ENABLED_SETTING_KEY,
+        if enabled { "true" } else { "false" },
+    )
 }
 
 /// 生成（或读取已存在的）网关访问令牌。
@@ -297,10 +300,7 @@ mod tests {
 
     #[test]
     fn namespace_parsing_accepts_only_proxy_apps() {
-        assert_eq!(
-            parse_gateway_namespace("claude").unwrap(),
-            AppType::Claude
-        );
+        assert_eq!(parse_gateway_namespace("claude").unwrap(), AppType::Claude);
         assert_eq!(
             parse_gateway_namespace("grokbuild").unwrap(),
             AppType::GrokBuild

@@ -27,7 +27,9 @@ pub struct GatewayProviderOption {
 
 /// 读取网关信息（令牌 + 各命名空间的模型目录）。
 #[tauri::command]
-pub async fn get_gateway_info(state: tauri::State<'_, AppState>) -> Result<gateway::GatewayInfo, AppError> {
+pub async fn get_gateway_info(
+    state: tauri::State<'_, AppState>,
+) -> Result<gateway::GatewayInfo, AppError> {
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || gateway::get_gateway_info(&db))
         .await
@@ -36,9 +38,7 @@ pub async fn get_gateway_info(state: tauri::State<'_, AppState>) -> Result<gatew
 
 /// 重新生成网关访问令牌（旧令牌立即失效）。
 #[tauri::command]
-pub async fn rotate_gateway_token(
-    state: tauri::State<'_, AppState>,
-) -> Result<String, AppError> {
+pub async fn rotate_gateway_token(state: tauri::State<'_, AppState>) -> Result<String, AppError> {
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || gateway::rotate_gateway_token(&db))
         .await
@@ -65,9 +65,11 @@ pub async fn set_gateway_catalog(
     entries: Vec<GatewayCatalogEntry>,
 ) -> Result<(), AppError> {
     let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || gateway::set_gateway_catalog(&db, &namespace, &entries))
-        .await
-        .map_err(|e| AppError::Message(format!("网关模型目录写入失败: {e}")))?
+    tauri::async_runtime::spawn_blocking(move || {
+        gateway::set_gateway_catalog(&db, &namespace, &entries)
+    })
+    .await
+    .map_err(|e| AppError::Message(format!("网关模型目录写入失败: {e}")))?
 }
 
 /// 列出所有命名空间的可选供应商（按命名空间分组扁平返回）。
@@ -117,8 +119,7 @@ pub async fn get_gateway_provider_models(
 
     let db = state.db.clone();
     let (base_url, api_key, api_format) = tauri::async_runtime::spawn_blocking(move || {
-        let app_type = gateway::parse_gateway_namespace(&namespace)
-            .map_err(|e| e.to_string())?;
+        let app_type = gateway::parse_gateway_namespace(&namespace).map_err(|e| e.to_string())?;
         let provider = db
             .get_provider_by_id(&provider_id, app_type.as_str())
             .map_err(|e| e.to_string())?

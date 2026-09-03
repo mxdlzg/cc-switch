@@ -185,9 +185,7 @@ impl RequestContext {
                             .filter(|s| !s.is_empty())
                             .map(str::to_string)
                     })
-                    .ok_or_else(|| {
-                        ProxyError::ConfigError("网关请求未携带模型名".to_string())
-                    })?;
+                    .ok_or_else(|| ProxyError::ConfigError("网关请求未携带模型名".to_string()))?;
 
                 let provider = crate::services::gateway::resolve_gateway_provider(
                     state.db.as_ref(),

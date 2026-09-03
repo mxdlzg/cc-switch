@@ -244,8 +244,14 @@ async fn handle_gateway_models_anthropic(
         .into_iter()
         .map(|id| json!({ "type": "model", "id": id }))
         .collect();
-    let first_id = data.first().and_then(|i| i.get("id")).and_then(Value::as_str);
-    let last_id = data.last().and_then(|i| i.get("id")).and_then(Value::as_str);
+    let first_id = data
+        .first()
+        .and_then(|i| i.get("id"))
+        .and_then(Value::as_str);
+    let last_id = data
+        .last()
+        .and_then(|i| i.get("id"))
+        .and_then(Value::as_str);
     Ok(Json(json!({
         "data": data,
         "has_more": false,
@@ -437,7 +443,9 @@ fn extract_bearer_token(
     missing_label: &str,
 ) -> Result<String, ProxyError> {
     let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
-        return Err(ProxyError::AuthError(format!("{missing_label} 缺少 Authorization 头")));
+        return Err(ProxyError::AuthError(format!(
+            "{missing_label} 缺少 Authorization 头"
+        )));
     };
     let value = value
         .to_str()
