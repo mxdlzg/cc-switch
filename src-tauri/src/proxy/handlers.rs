@@ -298,6 +298,8 @@ pub async fn handle_gateway_gemini_models(
 ) -> Result<Json<Value>, ProxyError> {
     handle_gateway_models_gemini(&state, &headers).await
 }
+
+async fn handle_messages_for_app(
     state: ProxyState,
     request: axum::extract::Request,
     app_type: AppType,
