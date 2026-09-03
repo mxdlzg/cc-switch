@@ -1,0 +1,103 @@
+# 手动触发的 Windows 打包：只出 x64 的未签名 MSI，作为 workflow artifact 供下载。
+#
+# 与 release.yml 的区别（这里是刻意为之）：
+# - 只 workflow_dispatch 手动触发，不监听 tag / push；
+# - 只打 Windows x64，不含 macOS / Linux / ARM64；
+# - 关掉 Tauri 的 updater 产物（createUpdaterArtifacts=false），因此**不需要
+#   TAURI_SIGNING_PRIVATE_KEY**，产出的 MSI 不签名、不参与自动更新。
+#   fork 拿不到上游的签名 secret，硬签名只会让构建在这一步失败。
+# - 不发 GitHub Release、不镜像 R2；产物只 upload-artifact。
+#
+# 这个包只适合自测/自用：没有 updater 签名，装了上游正式版的客户端不会把它
+# 当成合法更新来接收。
+name: Build Windows (manual)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windows x64 (unsigned MSI)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Setup pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: |
+          corepack enable
+          corepack install
+          pnpm --version
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri app (unsigned MSI)
+        # 关掉 updater 产物：否则 Tauri 会要求 minisign 私钥来签 .sig，而 fork 没有
+        # 那个 secret。--config 传一个临时覆盖文件，避免在 PowerShell 里内联 JSON 的
+        # 引号地狱；临时文件写在 RUNNER_TEMP，不污染仓库。
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cfg = Join-Path $env:RUNNER_TEMP 'tauri-nosign.config.json'
+          Set-Content -Path $cfg -Value '{"bundle":{"createUpdaterArtifacts":false}}' -Encoding utf8
+          pnpm tauri build --bundles msi --config $cfg
+
+      - name: Collect MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $msi = Get-ChildItem -Path 'src-tauri/target/release/bundle' -Recurse -Include *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $msi) {
+            throw "No MSI found under src-tauri/target/release/bundle"
+          }
+          Copy-Item $msi.FullName (Join-Path artifacts $msi.Name)
+          Write-Host "Collected installer: $($msi.Name)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: CC-Switch-Windows-x64-unsigned
+          path: artifacts/*.msi
+          if-no-files-found: error
