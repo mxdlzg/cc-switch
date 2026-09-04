@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { settingsApi, type LogConfig } from "@/lib/api/settings";
+import { DebugCaptureSection } from "@/components/settings/DebugCaptureSection";
 
 const LOG_LEVELS = ["error", "warn", "info", "debug", "trace"] as const;
 
@@ -114,6 +115,8 @@ export function LogConfigPanel() {
           </p>
         </div>
       </div>
+
+      <DebugCaptureSection />
     </div>
   );
 }

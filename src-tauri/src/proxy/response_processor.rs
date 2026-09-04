@@ -235,6 +235,19 @@ pub async fn handle_non_streaming(
         body_bytes.len()
     );
 
+    // 请求调试捕获:透传路径的非流式响应体 = 上游原文。关闭时首行返回。
+    if super::debug_capture::is_enabled() {
+        super::debug_capture::record_response(
+            &ctx.session_id,
+            ctx.app_type_str,
+            &ctx.provider.id,
+            ctx.outbound_model.as_deref().unwrap_or(&ctx.request_model),
+            status.as_u16(),
+            &body_bytes,
+            true,
+        );
+    }
+
     // 解析并记录使用量。关闭 usage logging 时直接跳过，避免非流式响应整包 JSON parse。
     if usage_logging_enabled(state) {
         if let Ok(json_value) = serde_json::from_slice::<Value>(&body_bytes) {

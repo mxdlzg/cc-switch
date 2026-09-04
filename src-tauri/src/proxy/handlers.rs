@@ -865,6 +865,21 @@ async fn handle_claude_transform(
     // 在上游缺 stream_options.include_usage 时没有 usage，写入只会产生无意义空行
     spawn_claude_usage_log(state, ctx, &anthropic_response, status.as_u16(), false);
 
+    // 请求调试捕获:转换路径的非流式响应体。此处是转换后的 Anthropic 响应
+    // （客户端所见），非上游原文,raw_upstream=false 供前端标注。关闭时首行返回。
+    if super::debug_capture::is_enabled() {
+        let body = serde_json::to_string(&anthropic_response).unwrap_or_default();
+        super::debug_capture::record_response(
+            &ctx.session_id,
+            ctx.app_type_str,
+            &ctx.provider.id,
+            ctx.outbound_model.as_deref().unwrap_or(&ctx.request_model),
+            status.as_u16(),
+            body.as_bytes(),
+            false,
+        );
+    }
+
     // 构建响应
     let mut builder = axum::response::Response::builder().status(status);
     strip_entity_headers_for_rebuilt_body(&mut response_headers);

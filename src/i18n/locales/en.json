@@ -447,6 +447,23 @@
           "debug": "Detailed info including SSE stream and request/response",
           "trace": "All logs, most verbose"
         }
+      },
+      "debugCapture": {
+        "label": "Request debug capture",
+        "hint": "Temporary debugging: when on, keeps request bodies, non-streaming response bodies, and error bodies (e.g. 400) in memory. Nothing is written to disk and it clears on restart; streaming (SSE) responses record only the HTTP status.",
+        "clear": "Clear",
+        "empty": "No captures yet (turn the switch on, then send a request)",
+        "emptyToggle": "New requests will be recorded below once enabled",
+        "count": "{{n}} captured (up to 50 kept)",
+        "rawUpstream": "raw upstream",
+        "converted": "converted response",
+        "truncated": "truncated",
+        "copied": "Body copied",
+        "kind": {
+          "request": "Request",
+          "response": "Response",
+          "error": "Error"
+        }
       }
     },
     "language": "Language",

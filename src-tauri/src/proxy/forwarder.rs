@@ -1722,6 +1722,15 @@ impl RequestForwarder {
         {
             outbound_model = Some(m.to_string());
         }
+        // 请求调试捕获（纯内存、临时）：记录发往上游的最终请求体。关闭时首行返回。
+        // 与接管/网关无关——两种模式都经过此处，捕获的是同一份出站 JSON。
+        super::debug_capture::record_request(
+            &self.session_id,
+            app_type.as_str(),
+            &provider.id,
+            outbound_model.as_deref().unwrap_or(""),
+            &filtered_body,
+        );
         log_prompt_cache_trace(
             app_type,
             provider,
@@ -2468,6 +2477,17 @@ impl RequestForwarder {
                 None => raw.to_vec(),
             };
             let body_text = String::from_utf8(decoded).ok();
+
+            // 请求调试捕获:上游非 2xx 的错误体原文(含你复现的 400 "system must be
+            // at the beginning")。这里在转 ProxyError 之前抓,覆盖接管与网关两种模式。
+            super::debug_capture::record_error(
+                &self.session_id,
+                app_type.as_str(),
+                &provider.id,
+                outbound_model.as_deref().unwrap_or(""),
+                status_code,
+                body_text.as_deref(),
+            );
 
             Err(ProxyError::UpstreamError {
                 status: status_code,
