@@ -551,18 +551,35 @@ fn zen_effort_rank(effort: &str) -> Option<u8> {
 /// 否则返回 `invalid params, chat content has invalid message role: system (2013)`。
 /// 把所有 system 消息合并到首位，避免中间 system（如 Codex 的 `developer` 指令）触发该约束；
 /// 该重排对 OpenAI / DeepSeek 等宽松兼容层也是无损的。
+///
+/// system 消息的 content 到这一步只有三种形态（见 `responses_content_to_chat_content`：
+/// 纯文本 parts 已折叠成 String）：
+/// - 非空 String：并入首位 system；
+/// - 空/纯空白 String、或 `Null`：Codex 常发 `{"role":"developer","content":null}`
+///   这类空指令项。合并后它本就贡献不了文本，若原样留在数组里会变成第二条
+///   `{"role":"system","content":null}`，被严格 OpenAI-chat 上游（如 A100）的
+///   `ChatCompletionSystemMessageParam` 校验判为 `content` 非 string/iterable → 400。
+///   这里直接丢弃（不 push 进 rest），既消除非法体，也顺带满足"只有一条 system"；
+/// - 非文本 Array（图片/文件/音频等）：无法并入文本块，作为合法的多模态 system 原样保留。
 fn collapse_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
     let mut system_chunks: Vec<String> = Vec::new();
     let mut rest: Vec<Value> = Vec::with_capacity(messages.len());
 
     for msg in messages {
         if msg.get("role").and_then(|v| v.as_str()) == Some("system") {
-            if let Some(text) = msg.get("content").and_then(|v| v.as_str()) {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    system_chunks.push(text.to_string());
+            match msg.get("content") {
+                // 文本（含 Codex developer 指令折叠后的 String）：并入首位，
+                // 空/空白内容也一并吞掉（continue），绝不作为第二条 system 落入 rest。
+                Some(Value::String(text)) => {
+                    if !text.trim().is_empty() {
+                        system_chunks.push(text.clone());
+                    }
+                    continue;
                 }
-                continue;
+                // 空指令项（`content: null` 或整个字段缺失）：丢弃，理由见函数文档。
+                Some(Value::Null) | None => continue,
+                // 非文本 content（多模态 system）：保留原样。
+                _ => {}
             }
         }
         rest.push(msg);
@@ -3010,6 +3027,79 @@ mod tests {
         assert_eq!(out[1]["content"], "U1");
         assert_eq!(out[2]["content"], "A1");
         assert_eq!(out[3]["content"], "U2");
+    }
+
+    #[test]
+    fn collapse_system_messages_drops_null_and_empty_system_content() {
+        // Codex 常见发 `{"role":"developer","content":null}` 这类空指令项。严格
+        // OpenAI-chat 上游会因第二条 `system` 的 `content: null` 判 400，故这里丢弃，
+        // 既不能落进 rest（否则成为第二条 system 且 content 非 string），也不能进入首位。
+        let input = vec![
+            json!({"role": "system", "content": "real"}),
+            json!({"role": "system", "content": null}),
+            json!({"role": "system", "content": "   "}),
+            json!({"role": "user", "content": "U1"}),
+        ];
+        let out = collapse_system_messages_to_head(input);
+
+        assert_eq!(out.len(), 2, "null/空白 system 应被丢弃");
+        assert_eq!(out[0]["role"], "system");
+        assert_eq!(out[0]["content"], "real");
+        assert_eq!(out[1]["role"], "user");
+    }
+
+    #[test]
+    fn collapse_system_messages_keeps_non_text_array_system() {
+        // 非文本（多模态）system content 无法并入文本块，须原样保留，不能因新分支被误丢。
+        let input = vec![
+            json!({"role": "system", "content": "head"}),
+            json!({
+                "role": "system",
+                "content": [{"type": "image_url", "image_url": {"url": "http://x/y.png"}}]
+            }),
+            json!({"role": "user", "content": "U1"}),
+        ];
+        let out = collapse_system_messages_to_head(input);
+
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0]["role"], "system");
+        assert_eq!(out[0]["content"], "head");
+        // 多模态 system 作为第二条原样保留（合法的多模态 system，非 null）。
+        assert_eq!(out[1]["role"], "system");
+        assert!(out[1]["content"].is_array());
+        assert_eq!(out[2]["role"], "user");
+    }
+
+    #[test]
+    fn responses_request_to_chat_drops_null_developer_message_from_codex() {
+        // 端到端复现 A100 报的 400：Codex 把 `developer` 指令发成 `content: null` 的
+        // 空项，转换后不得留下 `{"role":"system","content":null}`，否则严格上游判
+        // `ChatCompletionSystemMessageParam.content` 非 string/iterable。
+        let input = json!({
+            "model": "gpt-5.4",
+            "instructions": "You are Codex.",
+            "input": [
+                {"type": "message", "role": "developer", "content": null},
+                {"type": "message", "role": "user", "content": "hi"}
+            ]
+        });
+
+        let result = responses_to_chat_completions(input).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+
+        // 只剩首位 system（来自 instructions）+ 一条 user。
+        assert_eq!(messages.len(), 2, "null developer 项不得成为第二条 system");
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "You are Codex.");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "hi");
+        // 兜底：转换结果里任何一条的 content 都不能是 null。
+        for (idx, msg) in messages.iter().enumerate() {
+            assert!(
+                !msg["content"].is_null(),
+                "messages[{idx}].content 不能为 null（严格上游会 400）"
+            );
+        }
     }
 
     #[test]
