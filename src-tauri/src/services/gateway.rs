@@ -350,7 +350,10 @@ mod tests {
     #[test]
     fn validate_gateway_token_accepts_printable_ascii_and_trims() {
         // 合法：可见 ASCII，两端空白应被 trim 掉后原样返回。
-        assert_eq!(validate_gateway_token("  my-secret-token_1  ").unwrap(), "my-secret-token_1");
+        assert_eq!(
+            validate_gateway_token("  my-secret-token_1  ").unwrap(),
+            "my-secret-token_1"
+        );
         assert!(validate_gateway_token("ccs-abcdefghijklmnop").is_ok());
     }
 
