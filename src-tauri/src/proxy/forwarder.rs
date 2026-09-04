@@ -1204,6 +1204,19 @@ impl RequestForwarder {
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
     ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
+        // 请求调试捕获：先记录客户端**原始**请求体（未经模型映射 / 格式转换 /
+        // 私有参数过滤）。出站捕获看到的是转换后的新 body，thinking/output_config
+        // 等 claude 字段本就不透传，故无法据此判断客户端到底传了什么。关闭时首行返回。
+        super::debug_capture::record_client_request(
+            &self.session_id,
+            app_type.as_str(),
+            &provider.id,
+            body
+                .get("model")
+                .and_then(|m| m.as_str())
+                .unwrap_or(""),
+            body,
+        );
         // 使用适配器提取 base_url
         let mut base_url = adapter.extract_base_url(provider)?;
 

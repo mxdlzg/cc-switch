@@ -460,7 +460,8 @@
         "truncated": "truncated",
         "copied": "Body copied",
         "kind": {
-          "request": "Request",
+          "client_request": "Client",
+          "request": "Upstream",
           "response": "Response",
           "error": "Error"
         }

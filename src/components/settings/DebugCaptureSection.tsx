@@ -15,6 +15,7 @@ import type { CaptureEvent, CaptureKind } from "@/lib/api/debugCapture";
 
 /** 各捕获类型的徽章配色：错误一眼可辨，请求/响应区分开。 */
 const KIND_CLASS: Record<CaptureKind, string> = {
+  client_request: "bg-purple-500/15 text-purple-600 dark:text-purple-400",
   request: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
   response: "bg-green-500/15 text-green-700 dark:text-green-400",
   error: "bg-red-500/15 text-red-600 dark:text-red-400",

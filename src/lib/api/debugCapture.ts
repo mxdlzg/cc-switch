@@ -7,8 +7,8 @@ import { invoke } from "@tauri-apps/api/core";
  * 缓冲里，进程重启即清空。与「应用诊断日志」（写 logs/ 的 cc-switch.log）是两回事。
  */
 
-/** 捕获类型，对应后端 `CaptureKind`（serde 小写）。 */
-export type CaptureKind = "request" | "response" | "error";
+/** 捕获类型，对应后端 `CaptureKind`（serde snake_case）。 */
+export type CaptureKind = "client_request" | "request" | "response" | "error";
 
 /** 一条捕获记录，字段对应后端 `CaptureEvent`（camelCase）。 */
 export interface CaptureEvent {

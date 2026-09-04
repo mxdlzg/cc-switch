@@ -50,8 +50,10 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// 捕获类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum CaptureKind {
+    /// 客户端原始请求体（未经模型映射 / 格式转换 / 私有参数过滤），排查"到底传进来什么"
+    ClientRequest,
     /// 出站请求体（格式转换 / 模型映射 / 私有参数过滤后，真正发往上游的 JSON）
     Request,
     /// 上游 2xx 非流式响应体
@@ -229,6 +231,30 @@ fn push(
 /// 美化一个 JSON body；无法美化时退回原始字符串表示。
 fn pretty_json(value: &serde_json::Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+/// 捕获客户端原始请求体(未经任何映射/转换/过滤)。用于排查"客户端到底传进来
+/// 什么"——例如确认 Claude Code 是否真的带了 `thinking` / `output_config.effort`。
+pub fn record_client_request(
+    session_id: &str,
+    app_type: &str,
+    provider_id: &str,
+    model: &str,
+    original_body: &serde_json::Value,
+) {
+    if !is_enabled() {
+        return;
+    }
+    push(
+        CaptureKind::ClientRequest,
+        session_id,
+        app_type,
+        provider_id,
+        model,
+        None,
+        false,
+        pretty_json(original_body),
+    );
 }
 
 /// 捕获出站请求体。`filtered_body` 为发往上游的最终 JSON。

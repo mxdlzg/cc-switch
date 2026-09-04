@@ -460,7 +460,8 @@
         "truncated": "已截断",
         "copied": "正文已复制",
         "kind": {
-          "request": "请求",
+          "client_request": "客户端",
+          "request": "上游",
           "response": "响应",
           "error": "错误"
         }

@@ -460,7 +460,8 @@
         "truncated": "切り詰め済み",
         "copied": "本文をコピーしました",
         "kind": {
-          "request": "リクエスト",
+          "client_request": "クライアント",
+          "request": "上流",
           "response": "レスポンス",
           "error": "エラー"
         }
