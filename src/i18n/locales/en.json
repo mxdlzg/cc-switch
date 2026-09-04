@@ -450,7 +450,7 @@
       },
       "debugCapture": {
         "label": "Request debug capture",
-        "hint": "Temporary debugging: when on, keeps request bodies, non-streaming response bodies, and error bodies (e.g. 400) in memory. Nothing is written to disk and it clears on restart; streaming (SSE) responses record only the HTTP status.",
+        "hint": "Temporary debugging: when on, keeps request bodies, non-streaming response bodies, and error bodies (e.g. 400) in memory. Nothing is written to disk and it clears on restart; streaming (SSE) responses record only the HTTP status. Turning the switch off only stops NEW captures; already-captured entries stay listed (grouped per request, filterable by channel) until you clear them or restart.",
         "clear": "Clear",
         "empty": "No captures yet (turn the switch on, then send a request)",
         "emptyToggle": "New requests will be recorded below once enabled",
@@ -459,6 +459,11 @@
         "converted": "converted response",
         "truncated": "truncated",
         "copied": "Body copied",
+        "pausedBadge": "Paused",
+        "emptyPaused": "No captures (flip the switch on, then send a request — they appear here)",
+        "filterAll": "All channels",
+        "noTerminal": "no response (streaming or in-flight)",
+        "stepCount": "{{n}} step(s)",
         "kind": {
           "client_request": "Client",
           "request": "Upstream",

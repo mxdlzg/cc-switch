@@ -17,14 +17,16 @@ export function useDebugCaptureEnabled() {
 }
 
 /**
- * 轮询捕获快照。**只在开关打开时轮询**——关闭态后端 `record_*` 首行即返回，
- * 缓冲不再增长，轮询只是白跑一次 IPC。
+ * 读取捕获快照。**开关关闭时仍拉一次**——后端 `set_enabled(false)` 只停止*新*
+ * 捕获，缓冲保留到显式 clear 或进程重启，正是为了关掉后还能回看刚抓到的内容，
+ * 所以前端不能因为关闭就不读（否则已有条目会「消失」）。
+ *
+ * 轮询才受开关管辖：关闭态 `record_*` 首行即返回，缓冲不再增长，轮询只是白跑 IPC。
  */
 export function useDebugCaptureEvents(enabled: boolean) {
   return useQuery({
     queryKey: debugCaptureKeys.events,
     queryFn: () => debugCaptureApi.getEvents(),
-    enabled,
     refetchInterval: enabled ? 1000 : false,
     placeholderData: (previousData) => previousData,
   });
