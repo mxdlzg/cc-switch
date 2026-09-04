@@ -1211,10 +1211,7 @@ impl RequestForwarder {
             &self.session_id,
             app_type.as_str(),
             &provider.id,
-            body
-                .get("model")
-                .and_then(|m| m.as_str())
-                .unwrap_or(""),
+            body.get("model").and_then(|m| m.as_str()).unwrap_or(""),
             body,
         );
         // 使用适配器提取 base_url
