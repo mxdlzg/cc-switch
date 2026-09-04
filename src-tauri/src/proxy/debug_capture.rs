@@ -184,6 +184,7 @@ fn truncate(text: String) -> (String, bool) {
 ///
 /// `body` 已是最终字符串（美化 JSON 或原文）；调用方负责生成，
 /// 以免在未开启时无谓序列化。
+#[allow(clippy::too_many_arguments)]
 fn push(
     kind: CaptureKind,
     session_id: &str,
