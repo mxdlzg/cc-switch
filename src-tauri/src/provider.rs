@@ -573,7 +573,10 @@ pub struct ProviderMeta {
     ///
     /// 作为 provider 级开关：是否支持 effort 是供应商属性。开启即向该上游发
     /// `reasoning_effort`，若上游其实不接受会按其规则处理（部分严格上游会 400）。
-    #[serde(rename = "forceReasoningEffort", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "forceReasoningEffort",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub force_reasoning_effort: Option<bool>,
     /// Codex → Anthropic path: override the Anthropic `max_tokens` (output ceiling).
     ///
