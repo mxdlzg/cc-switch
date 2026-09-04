@@ -553,6 +553,11 @@ function ProviderFormFull({
     () => initialData?.meta?.hoistSystemToHead === true,
   );
 
+  // 强制转发推理强度：无视内置模型名白名单（仅 Chat / Responses 转换格式生效）。
+  // 默认关闭（沿用白名单，行为与不带此开关时一致）。
+  const [localForceReasoningEffort, setLocalForceReasoningEffort] =
+    useState<boolean>(() => initialData?.meta?.forceReasoningEffort === true);
+
   const handleApiKeyFieldChange = useCallback(
     (field: ClaudeApiKeyField) => {
       const prev = localApiKeyField;
@@ -1836,6 +1841,15 @@ function ProviderFormFull({
         localHoistSystemToHead
           ? true
           : undefined,
+      // 强制转发 effort：仅 Chat / Responses 转换格式 + 用户显式开启时持久化（默认关闭）
+      forceReasoningEffort:
+        appId === "claude" &&
+        category !== "official" &&
+        (localApiFormat === "openai_chat" ||
+          localApiFormat === "openai_responses") &&
+        localForceReasoningEffort
+          ? true
+          : undefined,
       isFullUrl:
         supportsFullUrl &&
         category !== "official" &&
@@ -2445,6 +2459,8 @@ function ProviderFormFull({
               onFullUrlChange={setLocalIsFullUrl}
               hoistSystemToHead={localHoistSystemToHead}
               onHoistSystemToHeadChange={setLocalHoistSystemToHead}
+              forceReasoningEffort={localForceReasoningEffort}
+              onForceReasoningEffortChange={setLocalForceReasoningEffort}
               customUserAgent={customUserAgent}
               onCustomUserAgentChange={setCustomUserAgent}
               localProxyHeadersOverride={localProxyHeadersOverride}

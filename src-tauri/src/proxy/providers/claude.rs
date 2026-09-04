@@ -398,6 +398,16 @@ pub fn transform_claude_request_for_api_format(
     } else {
         (None, "none")
     };
+    // 强制转发 effort 开关：开启时在 body 被转换消费前预解析出 effort（返回值是
+    // 'static 字符串常量,不借用 body,故可安全提前取出、转换后再注入)。见
+    // provider.rs::force_reasoning_effort——无视模型名白名单,只认请求里带的值。
+    // 关闭时恒 None,下游行为与不带此开关时完全一致。
+    let forced_effort: Option<String> = if provider.force_reasoning_effort_enabled() {
+        let resolved = super::transform::resolve_reasoning_effort(&body);
+        resolved.map(str::to_string)
+    } else {
+        None
+    };
     match api_format {
         "openai_responses" => {
             log::debug!(
@@ -434,6 +444,11 @@ pub fn transform_claude_request_for_api_format(
                 }
                 result["include"] = json!(include);
             }
+            // 强制转发 effort：无视白名单,把预解析的 effort 注入 reasoning.effort。
+            // 放在最后,覆盖转换层按白名单可能写入的值,确保以配置意图为准。
+            if let Some(effort) = &forced_effort {
+                result["reasoning"] = json!({ "effort": effort });
+            }
             Ok(result)
         }
         "openai_chat" => {
@@ -459,6 +474,11 @@ pub fn transform_claude_request_for_api_format(
                 .and_then(|m| m.prompt_cache_key.as_deref())
             {
                 result["prompt_cache_key"] = serde_json::json!(key);
+            }
+            // 强制转发 effort：无视白名单,把预解析的 effort 注入 reasoning_effort。
+            // 放在最后,覆盖转换层按白名单可能写入的值,确保以配置意图为准。
+            if let Some(effort) = &forced_effort {
+                result["reasoning_effort"] = json!(effort);
             }
             // 流式请求必须注入 stream_options.include_usage，否则 OpenAI 兼容上游
             // 不在 SSE 末尾吐 usage → 转换出的 Anthropic message_delta 全 0 →
@@ -2769,5 +2789,111 @@ mod tests {
             "You are Claude Code.\n<total_tokens>100 left</total_tokens>"
         );
         assert!(!messages[1..].iter().any(|m| m["role"] == json!("system")));
+    }
+
+    // ── forceReasoningEffort：无视模型名白名单，强制转发 effort ──
+
+    #[test]
+    fn test_openai_chat_drops_effort_for_non_allowlist_model_by_default() {
+        // 默认（未开 forceReasoningEffort）：模型名不在白名单（deepseek-r1），
+        // 请求带的 effort 被静默丢弃，与不带此开关时行为一致。
+        let provider = create_provider_with_meta(
+            json!({ "env": { "ANTHROPIC_BASE_URL": "https://example.com/v1" } }),
+            ProviderMeta {
+                api_format: Some("openai_chat".to_string()),
+                ..ProviderMeta::default()
+            },
+        );
+        let body = json!({
+            "model": "deepseek-r1",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "output_config": { "effort": "high" },
+            "max_tokens": 128
+        });
+
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None, None)
+                .unwrap();
+        assert!(
+            transformed.get("reasoning_effort").is_none(),
+            "白名单外模型默认不应注入 reasoning_effort"
+        );
+    }
+
+    #[test]
+    fn test_openai_chat_forces_effort_when_opted_in() {
+        // 开启 forceReasoningEffort：白名单外模型也注入 reasoning_effort。
+        let provider = create_provider_with_meta(
+            json!({ "env": { "ANTHROPIC_BASE_URL": "https://example.com/v1" } }),
+            ProviderMeta {
+                api_format: Some("openai_chat".to_string()),
+                force_reasoning_effort: Some(true),
+                ..ProviderMeta::default()
+            },
+        );
+        let body = json!({
+            "model": "deepseek-r1",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "output_config": { "effort": "high" },
+            "max_tokens": 128
+        });
+
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None, None)
+                .unwrap();
+        assert_eq!(transformed["reasoning_effort"], json!("high"));
+    }
+
+    #[test]
+    fn test_openai_responses_forces_effort_when_opted_in() {
+        // Responses 格式：开启后注入 reasoning.effort（对象形态）。
+        let provider = create_provider_with_meta(
+            json!({ "env": { "ANTHROPIC_BASE_URL": "https://example.com/v1" } }),
+            ProviderMeta {
+                api_format: Some("openai_responses".to_string()),
+                force_reasoning_effort: Some(true),
+                ..ProviderMeta::default()
+            },
+        );
+        let body = json!({
+            "model": "deepseek-r1",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "output_config": { "effort": "max" },
+            "max_tokens": 128
+        });
+
+        let transformed = transform_claude_request_for_api_format(
+            body,
+            &provider,
+            "openai_responses",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(transformed["reasoning"]["effort"], json!("xhigh"));
+    }
+
+    #[test]
+    fn test_openai_chat_force_off_when_no_effort_present() {
+        // 开启开关但请求里没有 effort/thinking：不注入任何 reasoning 字段
+        // （resolve_reasoning_effort 返回 None）。
+        let provider = create_provider_with_meta(
+            json!({ "env": { "ANTHROPIC_BASE_URL": "https://example.com/v1" } }),
+            ProviderMeta {
+                api_format: Some("openai_chat".to_string()),
+                force_reasoning_effort: Some(true),
+                ..ProviderMeta::default()
+            },
+        );
+        let body = json!({
+            "model": "deepseek-r1",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "max_tokens": 128
+        });
+
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None, None)
+                .unwrap();
+        assert!(transformed.get("reasoning_effort").is_none());
     }
 }

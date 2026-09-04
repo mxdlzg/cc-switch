@@ -96,6 +96,8 @@ const renderCopilotForm = (overrides: Partial<ClaudeFormFieldsProps> = {}) => {
     onFullUrlChange: vi.fn(),
     hoistSystemToHead: false,
     onHoistSystemToHeadChange: vi.fn(),
+    forceReasoningEffort: false,
+    onForceReasoningEffortChange: vi.fn(),
     customUserAgent: "",
     onCustomUserAgentChange: vi.fn(),
     localProxyHeadersOverride: "",
@@ -209,6 +211,9 @@ describe("ClaudeFormFields", () => {
     expect(
       screen.queryByRole("switch", { name: "把系统消息上提到开头" }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "强制转发推理强度" }),
+    ).not.toBeInTheDocument();
     unmount();
 
     const onHoistSystemToHeadChange = vi.fn();
@@ -225,5 +230,22 @@ describe("ClaudeFormFields", () => {
 
     fireEvent.click(toggle);
     expect(onHoistSystemToHeadChange).toHaveBeenCalledWith(false);
+  });
+
+  it("强制转发推理强度开关仅在 Chat / Responses 转换格式下显示", () => {
+    const onForceReasoningEffortChange = vi.fn();
+    renderCopilotForm({
+      apiFormat: "openai_responses",
+      forceReasoningEffort: true,
+      onForceReasoningEffortChange,
+    });
+
+    const toggle = screen.getByRole("switch", {
+      name: "强制转发推理强度",
+    });
+    expect(toggle).toBeChecked();
+
+    fireEvent.click(toggle);
+    expect(onForceReasoningEffortChange).toHaveBeenCalledWith(false);
   });
 });

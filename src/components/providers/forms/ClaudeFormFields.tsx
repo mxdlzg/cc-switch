@@ -157,6 +157,10 @@ interface ClaudeFormFieldsProps {
   hoistSystemToHead: boolean;
   onHoistSystemToHeadChange: (value: boolean) => void;
 
+  // Force forwarding reasoning effort, ignoring the built-in model-name allowlist
+  forceReasoningEffort: boolean;
+  onForceReasoningEffortChange: (value: boolean) => void;
+
   // Local proxy User-Agent override
   customUserAgent: string;
   onCustomUserAgentChange: (value: string) => void;
@@ -226,6 +230,8 @@ export function ClaudeFormFields({
   onFullUrlChange,
   hoistSystemToHead,
   onHoistSystemToHeadChange,
+  forceReasoningEffort,
+  onForceReasoningEffortChange,
   customUserAgent,
   onCustomUserAgentChange,
   localProxyHeadersOverride,
@@ -247,6 +253,7 @@ export function ClaudeFormFields({
     (!isXaiOauthPreset && apiFormat !== "anthropic") ||
     apiKeyField !== "ANTHROPIC_AUTH_TOKEN" ||
     hoistSystemToHead ||
+    forceReasoningEffort ||
     customUserAgent ||
     hasRequestOverrides
   );
@@ -880,6 +887,33 @@ export function ClaudeFormFields({
                   onCheckedChange={onHoistSystemToHeadChange}
                   aria-label={t("providerForm.hoistSystemToHeadLabel", {
                     defaultValue: "把系统消息上提到开头",
+                  })}
+                />
+              </div>
+            )}
+
+            {/* 强制转发推理强度（无视模型名白名单；仅 Chat / Responses 转换格式） */}
+            {(apiFormat === "openai_chat" ||
+              apiFormat === "openai_responses") && (
+              <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
+                <div className="space-y-1">
+                  <FormLabel>
+                    {t("providerForm.forceReasoningEffortLabel", {
+                      defaultValue: "强制转发推理强度",
+                    })}
+                  </FormLabel>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {t("providerForm.forceReasoningEffortHint", {
+                      defaultValue:
+                        "默认只在模型名命中内置白名单（o 系列 / gpt-5+ / grok-4.5）时，才把请求里的推理强度（effort）转发给上游；其余如 DeepSeek-R1、Qwen3 等会被静默丢弃。开启后无视模型名，只要请求带了 effort 就注入到上游 body。仅对确认「上游接受 reasoning_effort」的供应商开启，严格网关可能因未知字段报错。",
+                    })}
+                  </p>
+                </div>
+                <Switch
+                  checked={forceReasoningEffort}
+                  onCheckedChange={onForceReasoningEffortChange}
+                  aria-label={t("providerForm.forceReasoningEffortLabel", {
+                    defaultValue: "强制转发推理强度",
                   })}
                 />
               </div>

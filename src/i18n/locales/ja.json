@@ -1302,6 +1302,8 @@
     "apiFormatHint": "プロバイダーがネイティブ Anthropic Messages API なら Anthropic Messages を選択（直結、フォーマット変換なし）。Chat Completions プロトコルなら Chat、Responses API なら Responses、Gemini generateContent プロトコルなら Gemini Native を選択。Chat、Responses、Gemini Native は Anthropic Messages への変換にルーティング引き継ぎの有効化が必要です。",
     "hoistSystemToHeadLabel": "システムメッセージを先頭に集約",
     "hoistSystemToHeadHint": "会話の途中に system メッセージが現れることを拒否する厳しい上流向け（エラー: \"system message must be at the beginning\"）。Claude Code は <total_tokens> を会話途中の system メッセージとして挿入します。有効にすると先頭のシステムメッセージに統合します。代償：この挿入内容が毎回変化すると先頭バイトが変わり、毎回プレフィックスキャッシュが外れます。キャッシュに優しい上流ではオフのままにしてください。Chat / Responses 変換形式のみに影響します。",
+    "forceReasoningEffortLabel": "推論強度を強制転送",
+    "forceReasoningEffortHint": "デフォルトでは、モデル名が内蔵の許可リスト（o シリーズ / gpt-5+ / grok-4.5）に一致する場合のみ、リクエストの推論強度（effort）を上流へ転送します。DeepSeek-R1 や Qwen3 などは黙って破棄されます。有効にするとモデル名に関係なく、リクエストに effort が含まれていれば上流ボディに注入します。reasoning_effort を受け付ける上流のプロバイダーでのみ有効にしてください——厳しいゲートウェイは未知のフィールドを拒否する場合があります。",
     "customUserAgent": "カスタム User-Agent",
     "customUserAgentHint": "ローカルルーティング/プロキシ引き継ぎが有効な場合にのみ適用され、プロバイダー API へ転送するリクエストの User-Agent を置き換えます。",
     "customUserAgentInvalid": "User-Agent に制御文字（改行など）を含めることはできません。含まれている場合は無視されます。",

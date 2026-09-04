@@ -227,6 +227,15 @@ export interface ProviderMeta {
   // messages stay in place to preserve prefix cache. Only enable for providers whose
   // injected system content is stable across turns (otherwise it busts the cache).
   hoistSystemToHead?: boolean;
+  // OpenAI transform paths (openai_chat / openai_responses): when true, forward the
+  // reasoning effort to the upstream unconditionally, ignoring the built-in model-name
+  // allowlist (o-series / gpt-5+ / grok-4.5). By default effort from a Claude-format
+  // request is dropped unless the model name is in that allowlist — which silences
+  // DeepSeek-R1, Qwen3 and other third-party models that do support reasoning. Off by
+  // default: the allowlist keeps unknown fields away from strict upstreams. Only enable
+  // for providers whose upstream accepts reasoning_effort (otherwise a strict gateway
+  // may reject the request).
+  forceReasoningEffort?: boolean;
   // Codex → Anthropic path: override the Anthropic max_tokens (output ceiling).
   // Codex does not forward model_max_output_tokens in the request body; without
   // this the path falls back to a conservative 8192 default, which can truncate

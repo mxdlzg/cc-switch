@@ -136,6 +136,15 @@ impl Provider {
             .unwrap_or(false)
     }
 
+    /// OpenAI 转换路径是否无视模型名白名单、强制转发推理强度。见
+    /// [`ProviderMeta::force_reasoning_effort`]。默认关闭。
+    pub fn force_reasoning_effort_enabled(&self) -> bool {
+        self.meta
+            .as_ref()
+            .map(|m| m.force_reasoning_effort_enabled())
+            .unwrap_or(false)
+    }
+
     pub fn has_usage_script_enabled(&self) -> bool {
         self.meta
             .as_ref()
@@ -551,6 +560,21 @@ pub struct ProviderMeta {
     /// 只对确认「上游严格但注入的 system 内容稳定」的供应商开启，缓存不受影响。
     #[serde(rename = "hoistSystemToHead", skip_serializing_if = "Option::is_none")]
     pub hoist_system_to_head: Option<bool>,
+    /// 强制转发推理强度（effort），无视内置的模型名白名单。
+    ///
+    /// Anthropic→OpenAI 的 Chat/Responses 转换默认只在模型名命中
+    /// `supports_reasoning_effort` 白名单（o 系列 / gpt-5+ / grok-4.5）时，才把
+    /// `output_config.effort`（或 thinking budget）映射为 `reasoning_effort` /
+    /// `reasoning.effort`；其余模型（claude-*、以及 DeepSeek-R1、Qwen3 等其实支持
+    /// reasoning 的第三方模型）会被静默丢弃 effort。
+    ///
+    /// - 关闭（默认）：沿用白名单，行为与不带此开关时完全一致。
+    /// - 开启：只要请求里带了 effort/thinking，就无条件注入到上游 body。
+    ///
+    /// 作为 provider 级开关：是否支持 effort 是供应商属性。开启即向该上游发
+    /// `reasoning_effort`，若上游其实不接受会按其规则处理（部分严格上游会 400）。
+    #[serde(rename = "forceReasoningEffort", skip_serializing_if = "Option::is_none")]
+    pub force_reasoning_effort: Option<bool>,
     /// Codex → Anthropic path: override the Anthropic `max_tokens` (output ceiling).
     ///
     /// Codex does not forward its `model_max_output_tokens` in the Responses
@@ -620,6 +644,11 @@ impl ProviderMeta {
     /// 见 [`ProviderMeta::hoist_system_to_head`]。默认关闭（保持原位、保前缀缓存）。
     pub fn hoist_system_to_head_enabled(&self) -> bool {
         self.hoist_system_to_head.unwrap_or(false)
+    }
+
+    /// 见 [`ProviderMeta::force_reasoning_effort`]。默认关闭（沿用模型名白名单）。
+    pub fn force_reasoning_effort_enabled(&self) -> bool {
+        self.force_reasoning_effort.unwrap_or(false)
     }
 
     /// 经校验的 Provider 级自定义 User-Agent。见 [`parse_custom_user_agent`]。
