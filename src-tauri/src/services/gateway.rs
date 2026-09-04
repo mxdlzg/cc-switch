@@ -116,6 +116,55 @@ pub fn rotate_gateway_token(db: &Database) -> Result<String, AppError> {
     Ok(token)
 }
 
+/// 令牌允许长度（trim 后）。下限防空串，上限防误粘贴整篇文本塞满 `settings`。
+const GATEWAY_TOKEN_MIN_LEN: usize = 8;
+const GATEWAY_TOKEN_MAX_LEN: usize = 256;
+
+/// 校验用户自定义令牌，返回 trim 后的可用值。
+///
+/// 令牌会原样放进 `Authorization: Bearer <token>` 由第三方发送，故只允许
+/// HTTP header 安全的可见 ASCII（0x21..=0x7E，即空格 0x20 与 DEL 0x7F 之外的可打印
+/// 字符）。放空格会让 Bearer 解析歧义、放控制字符/非 ASCII 会让 header 非法或被
+/// 网关截断——严格校验胜过「存进去再 401 排查半天」。长度亦有上下限。
+fn validate_gateway_token(raw: &str) -> Result<String, AppError> {
+    let token = raw.trim();
+    if token.is_empty() {
+        return Err(AppError::localized(
+            "gateway.token.empty",
+            "令牌不能为空",
+            "Token cannot be empty",
+        ));
+    }
+    if !token.bytes().all(|b| (0x21..=0x7E).contains(&b)) {
+        return Err(AppError::localized(
+            "gateway.token.invalid_chars",
+            "令牌只能包含可见 ASCII 字符（不含空格），不支持中文或表情",
+            "Token may only contain printable ASCII (no spaces); no CJK or emoji",
+        ));
+    }
+    let len = token.chars().count();
+    if len < GATEWAY_TOKEN_MIN_LEN || len > GATEWAY_TOKEN_MAX_LEN {
+        return Err(AppError::localized(
+            "gateway.token.bad_length",
+            format!("令牌长度需为 {GATEWAY_TOKEN_MIN_LEN}-{GATEWAY_TOKEN_MAX_LEN} 个字符"),
+            format!(
+                "Token length must be {GATEWAY_TOKEN_MIN_LEN}-{GATEWAY_TOKEN_MAX_LEN} characters"
+            ),
+        ));
+    }
+    Ok(token.to_string())
+}
+
+/// 设置用户自定义访问令牌，返回生效后的令牌。
+///
+/// 与 `rotate` 同为单值覆盖：新令牌立即生效，旧令牌立刻失效（无过渡）。
+/// 校验见 `validate_gateway_token`——比自动生成更严，因为用户手输易带空格/中文。
+pub fn set_gateway_token(db: &Database, raw: &str) -> Result<String, AppError> {
+    let token = validate_gateway_token(raw)?;
+    db.set_setting(GATEWAY_TOKEN_SETTING_KEY, &token)?;
+    Ok(token)
+}
+
 /// 读取某个 namespace 的模型目录。未配置（键不存在）视为空目录。
 ///
 /// 存储损坏（非法 JSON）时报错而非静默清空——静默清空会让整个 namespace 变 404，
@@ -296,6 +345,33 @@ mod tests {
             constant_time_eq("aaaaX", "aaaaY"),
             constant_time_eq("Xaaaa", "Yaaaa")
         );
+    }
+
+    #[test]
+    fn validate_gateway_token_accepts_printable_ascii_and_trims() {
+        // 合法：可见 ASCII，两端空白应被 trim 掉后原样返回。
+        assert_eq!(validate_gateway_token("  my-secret-token_1  ").unwrap(), "my-secret-token_1");
+        assert!(validate_gateway_token("ccs-abcdefghijklmnop").is_ok());
+    }
+
+    #[test]
+    fn validate_gateway_token_rejects_bad_input() {
+        // 空 / 全空白。
+        assert!(validate_gateway_token("").is_err());
+        assert!(validate_gateway_token("    ").is_err());
+        // 含空格（Bearer 解析会歧义）。
+        assert!(validate_gateway_token("abc defghijkl").is_err());
+        // 非 ASCII（中文 / 表情）。
+        assert!(validate_gateway_token("令牌token123456").is_err());
+        assert!(validate_gateway_token("token😀abc12345").is_err());
+        // 控制字符（0x21 之下）。
+        assert!(validate_gateway_token("tok\nen12345678").is_err());
+        // 长度界限（下限 8，上限 256）。
+        assert!(validate_gateway_token("short7").is_err());
+        assert!(validate_gateway_token(&"a".repeat(7)).is_err());
+        assert!(validate_gateway_token(&"a".repeat(8)).is_ok());
+        assert!(validate_gateway_token(&"a".repeat(256)).is_ok());
+        assert!(validate_gateway_token(&"a".repeat(257)).is_err());
     }
 
     #[test]

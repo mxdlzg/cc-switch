@@ -9,6 +9,9 @@ import {
   CircleHelp,
   Plus,
   Trash2,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -37,6 +40,7 @@ import {
   useGatewayProviderOptions,
   useGatewayProviderModels,
   useRotateGatewayToken,
+  useSetGatewayToken,
   useSetGatewayEnabled,
   useSetGatewayCatalog,
 } from "@/lib/query/gateway";
@@ -496,8 +500,44 @@ export function GatewayPanel() {
 
   const setEnabled = useSetGatewayEnabled();
   const rotateToken = useRotateGatewayToken();
+  const setToken = useSetGatewayToken();
 
   const [showToken, setShowToken] = useState(false);
+  const [editingToken, setEditingToken] = useState(false);
+  const [tokenDraft, setTokenDraft] = useState("");
+
+  // 与后端 validate_gateway_token 同规则的前端预检：可见 ASCII（不含空格）、
+  // 8-256 字符。返回可读错误串或 null（合法）。仅为即时反馈，保存仍以后端为准。
+  const tokenDraftError = useMemo(() => {
+    const t = tokenDraft.trim();
+    if (t.length === 0) {
+      return { key: "gateway.token.empty", zh: "令牌不能为空" };
+    }
+    if (!/^[\x21-\x7E]+$/.test(t)) {
+      return {
+        key: "gateway.token.invalidChars",
+        zh: "只能包含可见 ASCII 字符（不含空格）",
+      };
+    }
+    if (t.length < 8 || t.length > 256) {
+      return {
+        key: "gateway.token.badLength",
+        zh: "长度需为 8-256 个字符",
+      };
+    }
+    return null;
+  }, [tokenDraft]);
+
+  const startEditToken = () => {
+    setTokenDraft(info?.token ?? "");
+    setEditingToken(true);
+  };
+  const saveToken = () => {
+    if (tokenDraftError) return;
+    setToken.mutate(tokenDraft.trim(), {
+      onSuccess: () => setEditingToken(false),
+    });
+  };
 
   const providersFor = (namespace: string) =>
     options.filter((o) => o.namespace === namespace);
@@ -574,60 +614,122 @@ export function GatewayPanel() {
             </div>
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <Input
-                readOnly
-                value={
-                  showToken
-                    ? info.token
-                    : "•".repeat(Math.min(info.token.length, 40))
-                }
-                className="font-mono text-sm"
-              />
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setShowToken((v) => !v)}
-                  aria-label={t("gateway.token.toggle", {
-                    defaultValue: "显示/隐藏令牌",
-                  })}
-                >
-                  {showToken ? (
-                    <EyeOff className="h-4 w-4" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    copyToClipboard(
-                      info.token,
-                      t("gateway.token.copied", {
-                        defaultValue: "令牌已复制",
-                      }),
-                    )
-                  }
-                >
-                  <Copy className="mr-1.5 h-4 w-4" />
-                  {t("common.copy")}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => rotateToken.mutate()}
-                  disabled={rotateToken.isPending}
-                >
-                  {rotateToken.isPending ? (
-                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="mr-1.5 h-4 w-4" />
-                  )}
-                  {t("gateway.token.rotate", { defaultValue: "轮换" })}
-                </Button>
-              </div>
+              {editingToken ? (
+                <>
+                  <Input
+                    autoFocus
+                    value={tokenDraft}
+                    onChange={(e) => setTokenDraft(e.target.value)}
+                    placeholder={t("gateway.token.editPlaceholder", {
+                      defaultValue: "输入新的访问令牌",
+                    })}
+                    className={`font-mono text-sm ${
+                      tokenDraftError ? "border-red-500" : ""
+                    }`}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={saveToken}
+                      disabled={!!tokenDraftError || setToken.isPending}
+                    >
+                      {setToken.isPending ? (
+                        <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Check className="mr-1.5 h-4 w-4" />
+                      )}
+                      {t("common.save", { defaultValue: "保存" })}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setEditingToken(false)}
+                      disabled={setToken.isPending}
+                    >
+                      <X className="mr-1.5 h-4 w-4" />
+                      {t("common.cancel", { defaultValue: "取消" })}
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Input
+                    readOnly
+                    value={
+                      showToken
+                        ? info.token
+                        : "•".repeat(Math.min(info.token.length, 40))
+                    }
+                    className="font-mono text-sm"
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowToken((v) => !v)}
+                      aria-label={t("gateway.token.toggle", {
+                        defaultValue: "显示/隐藏令牌",
+                      })}
+                    >
+                      {showToken ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        copyToClipboard(
+                          info.token,
+                          t("gateway.token.copied", {
+                            defaultValue: "令牌已复制",
+                          }),
+                        )
+                      }
+                    >
+                      <Copy className="mr-1.5 h-4 w-4" />
+                      {t("common.copy")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={startEditToken}
+                    >
+                      <Pencil className="mr-1.5 h-4 w-4" />
+                      {t("gateway.token.edit", { defaultValue: "自定义" })}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => rotateToken.mutate()}
+                      disabled={rotateToken.isPending}
+                    >
+                      {rotateToken.isPending ? (
+                        <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="mr-1.5 h-4 w-4" />
+                      )}
+                      {t("gateway.token.rotate", { defaultValue: "轮换" })}
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
+            {editingToken && tokenDraftError && (
+              <p className="text-xs text-red-500">
+                {t(tokenDraftError.key, { defaultValue: tokenDraftError.zh })}
+              </p>
+            )}
+            {editingToken && !tokenDraftError && (
+              <p className="text-xs text-muted-foreground">
+                {t("gateway.token.editHint", {
+                  defaultValue:
+                    "可见 ASCII、不含空格、8-256 字符。保存即生效，旧令牌立刻失效。",
+                })}
+              </p>
+            )}
           </div>
 
           {/* 各 namespace：模型目录编辑器 */}

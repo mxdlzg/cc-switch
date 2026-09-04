@@ -57,6 +57,16 @@ export const gatewayApi = {
     return invoke("rotate_gateway_token");
   },
 
+  /**
+   * 设置自定义访问令牌（旧令牌立即失效）。
+   *
+   * 后端校验为准（可见 ASCII、无空格、8-256 字符），返回生效后的令牌；
+   * 校验失败会 reject 并带可读消息。
+   */
+  async setGatewayToken(token: string): Promise<string> {
+    return invoke("set_gateway_token", { token });
+  },
+
   /** 开/关网关（关闭后 `/gateway/*` 一律 401）。 */
   async setGatewayEnabled(enabled: boolean): Promise<void> {
     return invoke("set_gateway_enabled", { enabled });

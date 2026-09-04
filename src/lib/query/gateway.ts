@@ -50,6 +50,39 @@ export function useRotateGatewayToken() {
   });
 }
 
+/**
+ * 设置自定义访问令牌（旧令牌立即失效）。
+ *
+ * 校验规则与后端 `validate_gateway_token` 对齐（可见 ASCII、无空格、8-256 字符）：
+ * 前端预检只为即时反馈，后端仍为准（防绕过 UI 直接 invoke）。
+ */
+export function useSetGatewayToken() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: (token: string) => gatewayApi.setGatewayToken(token),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: gatewayKeys.info });
+      toast.success(
+        t("gateway.toast.tokenSet", {
+          defaultValue: "访问令牌已更新，旧令牌立即失效",
+        }),
+        { closeButton: true },
+      );
+    },
+    onError: (error: Error) => {
+      toast.error(
+        t("gateway.toast.tokenSetFailed", {
+          error: error.message,
+          defaultValue: `设置令牌失败: ${error.message}`,
+        }),
+        { closeButton: true },
+      );
+    },
+  });
+}
+
 /** 开/关网关。 */
 export function useSetGatewayEnabled() {
   const queryClient = useQueryClient();

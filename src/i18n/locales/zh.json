@@ -3028,7 +3028,13 @@
       "hint": "第三方请求需在请求头携带：Authorization: Bearer <令牌>",
       "toggle": "显示/隐藏令牌",
       "copied": "令牌已复制",
-      "rotate": "轮换"
+      "rotate": "轮换",
+      "edit": "自定义",
+      "editPlaceholder": "输入新的访问令牌",
+      "editHint": "可见 ASCII、不含空格、8-256 字符。保存即生效，旧令牌立刻失效。",
+      "empty": "令牌不能为空",
+      "invalidChars": "只能包含可见 ASCII 字符（不含空格）",
+      "badLength": "长度需为 8-256 个字符"
     },
     "provider": {
       "pick": "选择供应商…",

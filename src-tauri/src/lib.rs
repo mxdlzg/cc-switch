@@ -1581,6 +1581,7 @@ pub fn run() {
             // Local gateway (`/gateway/*` endpoints, never touches Live configs)
             commands::get_gateway_info,
             commands::rotate_gateway_token,
+            commands::set_gateway_token,
             commands::set_gateway_enabled,
             commands::set_gateway_catalog,
             commands::get_gateway_provider_options,

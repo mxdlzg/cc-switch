@@ -3029,7 +3029,13 @@
       "hint": "第三方請求需在標頭攜帶：Authorization: Bearer <權杖>",
       "toggle": "顯示/隱藏權杖",
       "copied": "權杖已複製",
-      "rotate": "輪換"
+      "rotate": "輪換",
+      "edit": "自訂",
+      "editPlaceholder": "輸入新的存取權杖",
+      "editHint": "可見 ASCII、不含空格、8-256 字元。儲存即生效，舊權杖立刻失效。",
+      "empty": "權杖不能為空",
+      "invalidChars": "只能包含可見 ASCII 字元（不含空格）",
+      "badLength": "長度需為 8-256 個字元"
     },
     "provider": {
       "pick": "選擇供應商…",

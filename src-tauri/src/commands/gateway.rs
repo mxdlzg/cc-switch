@@ -45,6 +45,21 @@ pub async fn rotate_gateway_token(state: tauri::State<'_, AppState>) -> Result<S
         .map_err(|e| AppError::Message(format!("网关令牌轮换失败: {e}")))?
 }
 
+/// 设置自定义网关访问令牌（旧令牌立即失效）。
+///
+/// 校验在后端 `gateway::set_gateway_token` 做（可见 ASCII、长度界限），
+/// 前端只做同规则预检——以后端为准，防绕过 UI 直接 invoke 塞进非法值。
+#[tauri::command]
+pub async fn set_gateway_token(
+    state: tauri::State<'_, AppState>,
+    token: String,
+) -> Result<String, AppError> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || gateway::set_gateway_token(&db, &token))
+        .await
+        .map_err(|e| AppError::Message(format!("网关令牌设置失败: {e}")))?
+}
+
 /// 开/关网关。关闭后 `/gateway/*` 一律 401（不影响接管侧与本地 CLI）。
 #[tauri::command]
 pub async fn set_gateway_enabled(
