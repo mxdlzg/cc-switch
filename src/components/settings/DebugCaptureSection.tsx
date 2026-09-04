@@ -332,46 +332,55 @@ export function DebugCaptureSection() {
             <TabsContent
               key={ev.seq}
               value={String(ev.seq)}
-              className="m-0 flex min-h-0 flex-1 flex-col"
+              className="m-0 min-h-0 flex-1 overflow-hidden"
             >
-              <div className="flex items-center justify-between gap-2 px-4 py-1.5 text-[11px] text-muted-foreground">
-                <span className="flex items-center gap-2">
-                  <span className="font-mono">{formatTime(ev.atMs)}</span>
-                  {ev.status !== null && (
-                    <span className="font-mono">{ev.status}</span>
-                  )}
-                  {ev.kind === "response" && (
-                    <span>
-                      {ev.rawUpstream
-                        ? t(
-                            "settings.advanced.debugCapture.rawUpstream",
-                            "上游原文",
-                          )
-                        : t(
-                            "settings.advanced.debugCapture.converted",
-                            "转换后响应",
-                          )}
-                    </span>
-                  )}
-                  {ev.truncated && (
-                    <span className="text-amber-600 dark:text-amber-500">
-                      {t("settings.advanced.debugCapture.truncated", "已截断")}
-                    </span>
-                  )}
-                </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-6 shrink-0 px-2 text-[11px]"
-                  onClick={() => copyBody(ev.body)}
-                >
-                  {t("common.copy")}
-                </Button>
+              {/* display 工具类（flex/grid）刻意放在这一层内部、不放 TabsContent 上：
+                  Radix 靠 `hidden` 属性隐藏非活跃标签页，而 Tailwind 的 `flex` 是
+                  display 类、可能盖过 UA 的 `[hidden]{display:none}` → 四份 body 同时显示。
+                  TabsContent 只留 flex-item / overflow 这类非 display 属性，hidden 必生效。 */}
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex items-center justify-between gap-2 px-4 py-1.5 text-[11px] text-muted-foreground">
+                  <span className="flex items-center gap-2">
+                    <span className="font-mono">{formatTime(ev.atMs)}</span>
+                    {ev.status !== null && (
+                      <span className="font-mono">{ev.status}</span>
+                    )}
+                    {ev.kind === "response" && (
+                      <span>
+                        {ev.rawUpstream
+                          ? t(
+                              "settings.advanced.debugCapture.rawUpstream",
+                              "上游原文",
+                            )
+                          : t(
+                              "settings.advanced.debugCapture.converted",
+                              "转换后响应",
+                            )}
+                      </span>
+                    )}
+                    {ev.truncated && (
+                      <span className="text-amber-600 dark:text-amber-500">
+                        {t(
+                          "settings.advanced.debugCapture.truncated",
+                          "已截断",
+                        )}
+                      </span>
+                    )}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 shrink-0 px-2 text-[11px]"
+                    onClick={() => copyBody(ev.body)}
+                  >
+                    {t("common.copy")}
+                  </Button>
+                </div>
+                {/* 弹窗内唯一的正文滚动区：不再叠 max-h，撑满右列即可。 */}
+                <pre className="mx-4 mb-4 flex-1 overflow-auto rounded bg-muted/50 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">
+                  {ev.body || "—"}
+                </pre>
               </div>
-              {/* 弹窗内唯一的正文滚动区：不再叠 max-h，撑满右列即可。 */}
-              <pre className="mx-4 mb-4 flex-1 overflow-auto rounded bg-muted/50 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">
-                {ev.body || "—"}
-              </pre>
             </TabsContent>
           ))}
         </Tabs>
