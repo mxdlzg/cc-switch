@@ -340,13 +340,7 @@ mod tests {
             assert!(snapshot().is_empty(), "关闭态不应产生任何捕获");
 
             set_enabled(true);
-            record_request(
-                "s1",
-                "claude",
-                "prov",
-                "model-x",
-                &json!({ "hi": "there" }),
-            );
+            record_request("s1", "claude", "prov", "model-x", &json!({ "hi": "there" }));
             let snap = snapshot();
             let ev = snap
                 .iter()
