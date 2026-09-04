@@ -143,7 +143,7 @@ fn validate_gateway_token(raw: &str) -> Result<String, AppError> {
         ));
     }
     let len = token.chars().count();
-    if len < GATEWAY_TOKEN_MIN_LEN || len > GATEWAY_TOKEN_MAX_LEN {
+    if !(GATEWAY_TOKEN_MIN_LEN..=GATEWAY_TOKEN_MAX_LEN).contains(&len) {
         return Err(AppError::localized(
             "gateway.token.bad_length",
             format!("令牌长度需为 {GATEWAY_TOKEN_MIN_LEN}-{GATEWAY_TOKEN_MAX_LEN} 个字符"),
