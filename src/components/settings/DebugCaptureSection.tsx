@@ -5,6 +5,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -12,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { APP_IDS } from "@/config/appConfig";
 import { providersApi } from "@/lib/api/providers";
 import { useQuery } from "@tanstack/react-query";
@@ -98,14 +105,15 @@ function formatTime(atMs: number): string {
 }
 
 /**
- * 请求调试捕获：内存态的「客户端入站 / 上送上游 / 响应 / 错误体」面板。
+ * 请求调试捕获：内存态的「客户端入站 / 上送上游 / 响应 / 错误体」查看器。
  *
  * 独立于「应用诊断日志」——那个写 logs/ 下的文件，这个只在内存里留最近 50 条，
  * 重启即清空。开关是进程内全局态，立即生效、无需重启代理；**关闭只停新捕获，
  * 已捕获内容保留可回看**，显式清空或重启才消失。
  *
- * 展示单元是「一次请求」而非单条事件：同一请求的入站/出站/响应配对成一张卡，
- * 卡内按管道顺序竖排，避免入站与出站两份 body 在扁平列表里混在一起。
+ * 布局：面板内只留控件（开关 / 计数 / 清空 / 打开），**不内嵌列表**——内嵌列表会
+ * 在「窗口 → 设置页 → 列表 → body」叠出四层滚动条。正文改在弹窗里看：左列请求
+ * 列表、右列按步骤分标签页，一次只看一份 body，两处各自独立滚动。
  */
 export function DebugCaptureSection() {
   const { t } = useTranslation();
@@ -113,7 +121,8 @@ export function DebugCaptureSection() {
   const setEnabled = useSetDebugCaptureEnabled();
   const clearCapture = useClearDebugCapture();
   const { data: events } = useDebugCaptureEvents(!!enabled);
-  const [openTurn, setOpenTurn] = useState<number | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [selectedKey, setSelectedKey] = useState<number | null>(null);
   const [channelFilter, setChannelFilter] = useState<string>("all");
 
   // 渠道 = appType + providerId。只为捕获里出现过的 appType 拉供应商列表，
@@ -178,8 +187,12 @@ export function DebugCaptureSection() {
     [chronological, effectiveFilter],
   );
 
-  // 正序配对（卡内步骤才是 客户端→上游→响应），再整体倒序（最新请求在最上）。
+  // 正序配对（步骤才是 客户端→上游→响应），再整体倒序（最新请求在最上）。
   const turns = useMemo(() => buildTurns(visible).reverse(), [visible]);
+
+  // 选中项可能因清空/滚动而消失，回退到最新一条（同样避免渲染期 setState）。
+  const selected =
+    turns.find((turn) => turn.key === selectedKey) ?? turns[0] ?? null;
 
   const channelLabel = (appType: string, providerId: string): string => {
     const appName = t(`apps.${appType}`, appType);
@@ -199,7 +212,7 @@ export function DebugCaptureSection() {
 
   const allEmpty = chronological.length === 0;
 
-  /** 摘要里的管道进度：客户端→上游→响应，缺的那步标灰。 */
+  /** 列表行里的管道进度：客户端→上游→响应，缺的那步标灰。 */
   const renderPipeline = (turn: Turn) => {
     const lastKind: CaptureKind = turn.hasError ? "error" : "response";
     const steps: Array<{ kind: CaptureKind; ok: boolean }> = [
@@ -230,84 +243,105 @@ export function DebugCaptureSection() {
     );
   };
 
-  const renderTurn = (turn: Turn) => {
-    const isOpen = openTurn === turn.key;
-    const first = turn.events[0];
-    const last = turn.events[turn.events.length - 1];
-    const status = last.status ?? first.status;
+  const renderListItem = (turn: Turn) => {
+    const active = selected?.key === turn.key;
+    const head = turn.events[0];
+    const status = turn.events[turn.events.length - 1].status;
     return (
-      <li key={turn.key} className="rounded border">
+      <li key={turn.key}>
         <button
           type="button"
-          className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-2.5 py-1.5 text-left text-xs hover:bg-muted/50"
-          onClick={() => setOpenTurn(isOpen ? null : turn.key)}
+          onClick={() => setSelectedKey(turn.key)}
+          className={`w-full rounded px-2 py-1.5 text-left text-xs hover:bg-muted/60 ${
+            active ? "bg-muted" : ""
+          }`}
         >
-          <span className="font-mono text-muted-foreground">
-            {formatTime(first.atMs)}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-muted-foreground">
+              {formatTime(head.atMs)}
+            </span>
+            {status !== null ? (
+              <span
+                className={`font-mono ${
+                  turn.hasError
+                    ? "text-red-600 dark:text-red-400"
+                    : "text-muted-foreground"
+                }`}
+              >
+                {status}
+              </span>
+            ) : (
+              <span className="text-amber-600 dark:text-amber-500">—</span>
+            )}
+            <span className="truncate font-medium">{turn.model || "—"}</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <span className="truncate text-muted-foreground">
+              {channelLabel(turn.appType, turn.providerId)}
+            </span>
+            {renderPipeline(turn)}
+          </div>
+        </button>
+      </li>
+    );
+  };
+
+  /**
+   * 右列详情。`key={selected.key}` 让 Tabs 在换请求时重挂载，从而 defaultValue
+   * 重新生效——默认落在终态那步（响应/错误），不必每次手动点。
+   */
+  const renderDetail = (turn: Turn) => {
+    const defaultTab = turn.hasError
+      ? turn.events.find((e) => e.kind === "error")?.seq
+      : turn.events.find((e) => e.kind === "response")?.seq;
+    const fallbackTab = turn.events[turn.events.length - 1].seq;
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-4 py-2 text-xs">
           <span className="font-medium">
             {channelLabel(turn.appType, turn.providerId)}
           </span>
-          <span className="truncate text-muted-foreground">
+          <span className="font-mono text-muted-foreground">
             {turn.model || "—"}
           </span>
+          <span className="break-all font-mono text-muted-foreground">
+            {`session=${turn.sessionId || "—"}`}
+          </span>
           {renderPipeline(turn)}
-          {status !== null && (
-            <span
-              className={`font-mono ${
-                turn.hasError
-                  ? "text-red-600 dark:text-red-400"
-                  : "text-muted-foreground"
-              }`}
-            >
-              {status}
-            </span>
-          )}
-          {!turn.hasTerminal && (
-            <span className="text-amber-600 dark:text-amber-500">
-              {t(
-                "settings.advanced.debugCapture.noTerminal",
-                "无响应（流式或进行中）",
-              )}
-            </span>
-          )}
-          {turn.events.some((e) => e.truncated) && (
-            <span className="text-amber-600 dark:text-amber-500">
-              {t("settings.advanced.debugCapture.truncated", "已截断")}
-            </span>
-          )}
-        </button>
-        {isOpen && (
-          <div className="space-y-2 border-t p-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="break-all font-mono text-[11px] text-muted-foreground">
-                {`session=${turn.sessionId || "—"} · ${t(
-                  "settings.advanced.debugCapture.stepCount",
-                  { n: turn.events.length, defaultValue: "{{n}} 步" },
-                )}`}
-              </span>
-            </div>
+        </div>
+        <Tabs
+          key={turn.key}
+          defaultValue={String(defaultTab ?? fallbackTab)}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <TabsList className="mx-4 mt-2 self-start">
             {turn.events.map((ev) => (
-              <div key={ev.seq} className="rounded border bg-muted/30">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1 text-[11px]">
-                  <Badge
-                    className={`border-transparent px-1.5 py-0 ${KIND_CLASS[ev.kind]}`}
-                  >
-                    {kindLabel(ev.kind)}
-                  </Badge>
-                  <span className="font-mono text-muted-foreground">
-                    {formatTime(ev.atMs)}
-                  </span>
+              <TabsTrigger
+                key={ev.seq}
+                value={String(ev.seq)}
+                className="gap-1.5"
+              >
+                {kindLabel(ev.kind)}
+                {ev.truncated && (
+                  <span className="text-amber-600 dark:text-amber-500">·</span>
+                )}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {turn.events.map((ev) => (
+            <TabsContent
+              key={ev.seq}
+              value={String(ev.seq)}
+              className="m-0 flex min-h-0 flex-1 flex-col"
+            >
+              <div className="flex items-center justify-between gap-2 px-4 py-1.5 text-[11px] text-muted-foreground">
+                <span className="flex items-center gap-2">
+                  <span className="font-mono">{formatTime(ev.atMs)}</span>
                   {ev.status !== null && (
-                    <span className="font-mono text-muted-foreground">
-                      {ev.status}
-                    </span>
+                    <span className="font-mono">{ev.status}</span>
                   )}
-                  <span className="truncate font-mono text-muted-foreground">
-                    {ev.model || "—"}
-                  </span>
                   {ev.kind === "response" && (
-                    <span className="text-muted-foreground">
+                    <span>
                       {ev.rawUpstream
                         ? t(
                             "settings.advanced.debugCapture.rawUpstream",
@@ -324,23 +358,24 @@ export function DebugCaptureSection() {
                       {t("settings.advanced.debugCapture.truncated", "已截断")}
                     </span>
                   )}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="ml-auto h-6 shrink-0 px-2 text-[11px]"
-                    onClick={() => copyBody(ev.body)}
-                  >
-                    {t("common.copy")}
-                  </Button>
-                </div>
-                <pre className="max-h-72 overflow-auto border-t bg-muted/50 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">
-                  {ev.body || "—"}
-                </pre>
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 shrink-0 px-2 text-[11px]"
+                  onClick={() => copyBody(ev.body)}
+                >
+                  {t("common.copy")}
+                </Button>
               </div>
-            ))}
-          </div>
-        )}
-      </li>
+              {/* 弹窗内唯一的正文滚动区：不再叠 max-h，撑满右列即可。 */}
+              <pre className="mx-4 mb-4 flex-1 overflow-auto rounded bg-muted/50 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">
+                {ev.body || "—"}
+              </pre>
+            </TabsContent>
+          ))}
+        </Tabs>
+      </div>
     );
   };
 
@@ -360,72 +395,106 @@ export function DebugCaptureSection() {
         />
       </div>
 
-      {/* 捕获器不随开关隐藏：关闭只停新捕获，缓冲里的内容仍可回看。 */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            {!enabled && !allEmpty && (
-              <Badge className="border-transparent bg-amber-500/15 px-1.5 py-0 text-[11px] text-amber-600 dark:text-amber-500">
-                {t("settings.advanced.debugCapture.pausedBadge", "已暂停")}
-              </Badge>
-            )}
-            <span className="truncate text-xs text-muted-foreground">
-              {allEmpty
-                ? enabled
-                  ? t(
-                      "settings.advanced.debugCapture.emptyToggle",
-                      "开启后新请求将记录在下方",
-                    )
-                  : t(
-                      "settings.advanced.debugCapture.emptyPaused",
-                      "暂无捕获（开启开关后发请求即记录在这里）",
-                    )
-                : t("settings.advanced.debugCapture.count", {
-                    n: chronological.length,
-                    defaultValue: `已捕获 ${chronological.length} 条（最多保留 50 条）`,
-                  })}
-            </span>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {channels.length > 1 && (
-              <Select value={effectiveFilter} onValueChange={setChannelFilter}>
-                <SelectTrigger className="h-7 w-[190px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">
-                    {t("settings.advanced.debugCapture.filterAll", "全部渠道")}
-                  </SelectItem>
-                  {channels.map(([key, ch]) => (
-                    <SelectItem key={key} value={key}>
-                      {channelLabel(ch.appType, ch.providerId)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-xs"
-              disabled={allEmpty || clearCapture.isPending}
-              onClick={() => clearCapture.mutate()}
-            >
-              {t("settings.advanced.debugCapture.clear")}
-            </Button>
-          </div>
-        </div>
-
-        {allEmpty ? (
-          <div className="rounded-lg bg-muted/50 px-4 py-6 text-center text-xs text-muted-foreground">
-            {t("settings.advanced.debugCapture.empty")}
-          </div>
-        ) : (
-          <ul className="max-h-[30rem] space-y-1.5 overflow-auto">
-            {turns.map(renderTurn)}
-          </ul>
+      {/* 只放控件：列表与正文都挪进弹窗，避免与窗口/设置页滚动互相嵌套。 */}
+      <div className="flex flex-wrap items-center gap-2">
+        {!enabled && !allEmpty && (
+          <Badge className="border-transparent bg-amber-500/15 px-1.5 py-0 text-[11px] text-amber-600 dark:text-amber-500">
+            {t("settings.advanced.debugCapture.pausedBadge", "已暂停")}
+          </Badge>
         )}
+        <span className="text-xs text-muted-foreground">
+          {t("settings.advanced.debugCapture.count", {
+            n: chronological.length,
+            defaultValue: `已捕获 ${chronological.length} 条（最多保留 50 条）`,
+          })}
+        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={allEmpty}
+            onClick={() => setViewerOpen(true)}
+          >
+            {t("settings.advanced.debugCapture.open", "查看捕获")}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={allEmpty || clearCapture.isPending}
+            onClick={() => clearCapture.mutate()}
+          >
+            {t("settings.advanced.debugCapture.clear")}
+          </Button>
+        </div>
       </div>
+
+      <Dialog open={viewerOpen} onOpenChange={setViewerOpen}>
+        <DialogContent className="max-w-[min(1200px,95vw)]">
+          <DialogHeader>
+            <DialogTitle>
+              {t("settings.advanced.debugCapture.viewerTitle", "捕获查看器")}
+            </DialogTitle>
+          </DialogHeader>
+
+          {allEmpty ? (
+            <div className="rounded-lg bg-muted/50 px-4 py-10 text-center text-xs text-muted-foreground">
+              {t("settings.advanced.debugCapture.empty")}
+            </div>
+          ) : (
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden border-t md:grid-cols-[300px_minmax(0,1fr)]">
+              {/* 左列：渠道筛选 + 请求列表（本列唯一滚动区） */}
+              <div className="flex max-h-[40vh] min-h-0 flex-col border-b md:max-h-none md:border-b-0 md:border-r">
+                {channels.length > 1 && (
+                  <div className="border-b p-2">
+                    <Select
+                      value={effectiveFilter}
+                      onValueChange={setChannelFilter}
+                    >
+                      <SelectTrigger
+                        className="h-8 text-xs"
+                        aria-label={t(
+                          "settings.advanced.debugCapture.filterAll",
+                          "全部渠道",
+                        )}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">
+                          {t(
+                            "settings.advanced.debugCapture.filterAll",
+                            "全部渠道",
+                          )}
+                        </SelectItem>
+                        {channels.map(([key, ch]) => (
+                          <SelectItem key={key} value={key}>
+                            {channelLabel(ch.appType, ch.providerId)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                <ul className="min-h-0 flex-1 divide-y overflow-y-auto">
+                  {turns.map(renderListItem)}
+                </ul>
+              </div>
+
+              {/* 右列：选中的请求，步骤按标签页分（本列唯一滚动区是那个 pre） */}
+              {selected ? (
+                renderDetail(selected)
+              ) : (
+                <div className="flex items-center justify-center p-8 text-xs text-muted-foreground">
+                  {t(
+                    "settings.advanced.debugCapture.noSelection",
+                    "选择左侧一条请求查看正文",
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
