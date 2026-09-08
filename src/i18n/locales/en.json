@@ -3042,7 +3042,9 @@
     "provider": {
       "pick": "Select a provider…",
       "unset": "(not selected)",
-      "noneAvailable": "No providers configured for this app"
+      "noneAvailable": "No providers configured for this app",
+      "pickDefault": "Select a default provider...",
+      "noneAvailableWarning": "No providers left for this app — provider mode can't forward any request (all 404). Add a provider on the home page first."
     },
     "catalog": {
       "sourceLabel": "Source provider (fetch list / owns new entries)",
@@ -3067,7 +3069,16 @@
     },
     "toast": {
       "tokenRotated": "Access token regenerated — the old token is now invalid",
-      "catalogSetFailed": "Failed to save gateway catalog: {{error}}"
+      "catalogSetFailed": "Failed to save gateway catalog: {{error}}",
+      "modeSetFailed": "Failed to set gateway routing mode: {{error}}"
+    },
+    "mode": {
+      "label": "Routing mode",
+      "model": "By model catalog (404 if not listed)",
+      "providerItem": "Route all to: {{name}}",
+      "modelHint": "A request is forwarded only when its model name matches the catalog; anything else returns 404.",
+      "providerHint": "Every model name is forwarded verbatim to the selected provider (no catalog lookup, no 404). Switching back to catalog mode leaves your saved catalog intact.",
+      "providerMissingWarning": "The selected provider was deleted: every request on this endpoint returns 404. Pick a provider again."
     }
   },
   "proxyConfig": {

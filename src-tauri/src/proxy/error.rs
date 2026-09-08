@@ -41,6 +41,12 @@ pub enum ProxyError {
     #[error("请求的模型未在网关目录中: {0}")]
     ModelNotFound(String),
 
+    /// provider 模式下该 namespace 未配置（或已删除）默认供应商。与 `ModelNotFound`
+    /// 分开：这条不是"模型不在目录里"，此时根本不查目录，混用会让客户端以为自己的
+    /// model 名写错了。
+    #[error("该命名空间未配置网关默认供应商")]
+    NoGatewayProvider,
+
     #[allow(dead_code)]
     #[error("Provider不健康: {0}")]
     ProviderUnhealthy(String),
@@ -151,6 +157,7 @@ impl IntoResponse for ProxyError {
                     }
                     ProxyError::ConfigError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
                     ProxyError::ModelNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
+                    ProxyError::NoGatewayProvider => (StatusCode::NOT_FOUND, self.to_string()),
                     ProxyError::TransformError(_) => {
                         (StatusCode::UNPROCESSABLE_ENTITY, self.to_string())
                     }

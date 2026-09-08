@@ -3043,7 +3043,9 @@
     "provider": {
       "pick": "選擇供應商…",
       "unset": "（未選擇）",
-      "noneAvailable": "該應用程式下還沒有供應商"
+      "noneAvailable": "該應用程式下還沒有供應商",
+      "pickDefault": "選擇預設供應商…",
+      "noneAvailableWarning": "該應用下已沒有供應商，供應商模式無法轉發任何請求（全部 404）。請先在首頁新增供應商。"
     },
     "catalog": {
       "sourceLabel": "模型來源供應商（用於拉取清單 / 歸屬新條目）",
@@ -3068,7 +3070,16 @@
     },
     "toast": {
       "tokenRotated": "存取權杖已重新產生，舊權杖立即失效",
-      "catalogSetFailed": "儲存閘道模型目錄失敗：{{error}}"
+      "catalogSetFailed": "儲存閘道模型目錄失敗：{{error}}",
+      "modeSetFailed": "設定閘道路由模式失敗：{{error}}"
+    },
+    "mode": {
+      "label": "路由模式",
+      "model": "依模型目錄（未列出 404）",
+      "providerItem": "全部轉給：{{name}}",
+      "modelHint": "用戶端請求的模型名符合目錄才轉發，未符合一律 404。",
+      "providerHint": "任意模型名都會原樣轉發給所選供應商（不查目錄、不回報 404）。切回目錄模式不影響已儲存的模型目錄。",
+      "providerMissingWarning": "所選供應商已被刪除：該端點所有請求都會回報 404，請重新選擇一個供應商。"
     }
   },
   "proxyConfig": {

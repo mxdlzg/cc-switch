@@ -1584,6 +1584,7 @@ pub fn run() {
             commands::set_gateway_token,
             commands::set_gateway_enabled,
             commands::set_gateway_catalog,
+            commands::set_gateway_namespace_mode,
             commands::get_gateway_provider_options,
             commands::get_gateway_provider_models,
             // Proxy failover commands

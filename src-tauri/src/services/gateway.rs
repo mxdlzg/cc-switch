@@ -4,9 +4,12 @@
 //! 第三方工具接入。与「接管」的关键区别：
 //!
 //! - **不改写任何 CLI 的 Live 配置文件**，也不产生 `proxy_live_backup` 备份行；
-//! - 每个 namespace 各自持有一张 **model → provider 目录**（引用首页已有的供应商
-//!   卡片，而非复制一份）；请求命中目录则路由到该 model 指定的 provider，
-//!   未命中直接 404（空目录 = 全部 404，不回落首页当前供应商）；
+//! - 每个 namespace 各自选一种路由**模式**（引用首页已有的供应商卡片，而非复制一份）：
+//!   - **model 模式**（缺省）：持有一张 **model → provider 目录**，请求命中目录才
+//!     路由到该 model 指定的 provider，未命中直接 404（空目录 = 全部 404）；
+//!   - **provider 模式**：整条 namespace 流量透传给一个默认供应商，不查目录、不 404，
+//!     模型名原样送达上游。
+//!   切模式不会销毁另一模式的配置（目录在 provider 模式下只是不被读取）。
 //! - 访问必须携带 `Authorization: Bearer <token>`（常数时间比较）。
 //!
 //! 网关请求使用 provider **自身**的 `app_type` 作为 `app_type_str`（而非 "gateway"）：
@@ -29,6 +32,55 @@ const GATEWAY_ENABLED_SETTING_KEY: &str = "gateway_enabled";
 /// 某个 namespace 的模型目录，存储键前缀。完整键形如
 /// `gateway_catalog_claude`，值为 `Vec<GatewayCatalogEntry>` 的 JSON。
 const GATEWAY_CATALOG_SETTING_PREFIX: &str = "gateway_catalog_";
+
+/// 某个 namespace 的路由模式，存储键前缀。完整键形如 `gateway_mode_claude`，
+/// 值为 `GatewayMode` 的字面量（`"model"` / `"provider"`）。
+const GATEWAY_MODE_SETTING_PREFIX: &str = "gateway_mode_";
+
+/// provider 模式下该 namespace 的默认供应商 id，存储键前缀。完整键形如
+/// `gateway_default_provider_claude`。仅在 provider 模式下被读取。
+const GATEWAY_DEFAULT_PROVIDER_SETTING_PREFIX: &str = "gateway_default_provider_";
+
+/// 单个 namespace 的路由模式。
+///
+/// 决定 `/gateway/<ns>` 的请求怎么选 provider，**每个 namespace 各自独立**：
+/// - [`GatewayMode::Model`]（缺省）：按模型目录精确路由，未命中 404。
+/// - [`GatewayMode::Provider`]：整条流量透传给一个默认供应商，不查目录、不 404，
+///   且模型名原样送达上游（网关流量本就跳过模型映射）。
+///
+/// 缺省 Model 让老库（无此键）沿用现有严格目录语义，升级零行为变化。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GatewayMode {
+    /// 按模型目录路由（缺省）。
+    #[default]
+    Model,
+    /// 全部路由到默认供应商。
+    Provider,
+}
+
+impl GatewayMode {
+    /// 存储用的字面量（与 serde 表示一致，避免两处各写一份字符串）。
+    fn as_str(self) -> &'static str {
+        match self {
+            GatewayMode::Model => "model",
+            GatewayMode::Provider => "provider",
+        }
+    }
+
+    /// 解析存储值。未识别的值（手改库、旧版本写入）按缺省 Model 处理并记日志——
+    /// 退回严格模式是安全侧：最坏是 404，不会把流量意外发给某个供应商。
+    fn parse(raw: &str) -> Self {
+        match raw.trim() {
+            "provider" => GatewayMode::Provider,
+            "" | "model" => GatewayMode::Model,
+            other => {
+                log::warn!("[Gateway] 未识别的网关模式 {other:?}，按 model 模式处理");
+                GatewayMode::Model
+            }
+        }
+    }
+}
 
 /// 网关可暴露的 namespace（协议方言）。
 ///
@@ -72,6 +124,14 @@ pub fn parse_gateway_namespace(raw: &str) -> Result<AppType, AppError> {
 
 fn catalog_setting_key(namespace: &str) -> String {
     format!("{GATEWAY_CATALOG_SETTING_PREFIX}{namespace}")
+}
+
+fn mode_setting_key(namespace: &str) -> String {
+    format!("{GATEWAY_MODE_SETTING_PREFIX}{namespace}")
+}
+
+fn default_provider_setting_key(namespace: &str) -> String {
+    format!("{GATEWAY_DEFAULT_PROVIDER_SETTING_PREFIX}{namespace}")
 }
 
 /// 网关是否启用。缺省（未写入 / 空值）视为启用。
@@ -259,6 +319,126 @@ pub fn resolve_gateway_provider(
     db.get_provider_by_id(&entry.provider_id, namespace.as_str())
 }
 
+/// 读取某个 namespace 的路由模式。缺省（键不存在 / 空值）为 [`GatewayMode::Model`]。
+pub fn get_gateway_mode(db: &Database, namespace: &AppType) -> Result<GatewayMode, AppError> {
+    Ok(match db.get_setting(&mode_setting_key(namespace.as_str()))? {
+        Some(raw) => GatewayMode::parse(&raw),
+        None => GatewayMode::Model,
+    })
+}
+
+/// 读取 provider 模式下该 namespace 的默认供应商。
+///
+/// 未配置（键为空）或供应商已被删除都返回 `Ok(None)`——调用方据此返回 404，
+/// 与 model 模式「陈旧条目等同未配置」一致，不 500、不回落首页当前供应商。
+pub fn get_gateway_default_provider(
+    db: &Database,
+    namespace: &AppType,
+) -> Result<Option<Provider>, AppError> {
+    let Some(raw) = db.get_setting(&default_provider_setting_key(namespace.as_str()))? else {
+        return Ok(None);
+    };
+    let id = raw.trim();
+    if id.is_empty() {
+        return Ok(None);
+    }
+    db.get_provider_by_id(id, namespace.as_str())
+}
+
+/// 设置某个 namespace 的路由模式与（provider 模式下的）默认供应商。
+///
+/// 切到 provider 模式**必须**给一个属于该 namespace 的 provider（校验同目录写入）；
+/// 切到 model 模式则清空默认供应商键，但**绝不动目录**——目录只在 model 模式被读取，
+/// 切回时原样恢复。
+pub fn set_gateway_namespace_mode(
+    db: &Database,
+    namespace: &str,
+    mode: GatewayMode,
+    default_provider_id: Option<&str>,
+) -> Result<(), AppError> {
+    let namespace = parse_gateway_namespace(namespace)?;
+    let key = default_provider_setting_key(namespace.as_str());
+
+    match mode {
+        GatewayMode::Model => {
+            db.set_setting(&mode_setting_key(namespace.as_str()), GatewayMode::Model.as_str())?;
+            // 清掉默认供应商（写空串 = 未配置，见 get_gateway_default_provider）。
+            db.set_setting(&key, "")
+        }
+        GatewayMode::Provider => {
+            let id = default_provider_id.map(str::trim).filter(|s| !s.is_empty());
+            let Some(id) = id else {
+                return Err(AppError::localized(
+                    "gateway.provider.required",
+                    "provider 模式需要选择一个默认供应商",
+                    "Provider mode requires a default provider",
+                ));
+            };
+            if db.get_provider_by_id(id, namespace.as_str())?.is_none() {
+                return Err(AppError::localized(
+                    "gateway.provider.not_found",
+                    "该供应商不属于此网关命名空间",
+                    "Provider does not belong to this gateway namespace",
+                ));
+            }
+            db.set_setting(&key, id)?;
+            db.set_setting(&mode_setting_key(namespace.as_str()), GatewayMode::Provider.as_str())
+        }
+    }
+}
+
+/// provider 模式下实时拉上游模型列表所需的静态参数（`/models` 端点与设置页共用）。
+///
+/// 只含**同步可得**的信息：provider 查找、base URL、静态 key、方言标记。真正的
+/// 网络请求 `fetch_models` 是 async，留在调用方 await——这样同一条链路既能被
+/// Tauri 命令（`spawn_blocking`）用，也能被 axum handler 用，阻塞段不会卡住
+/// async 运行时。
+pub struct UpstreamModelsRequest {
+    pub base_url: String,
+    pub api_key: String,
+    /// 传给 `model_fetch::fetch_models` 的 `api_format`；None = 该鉴权方式无法静态拉取。
+    pub api_format: Option<&'static str>,
+}
+
+/// 同步准备 provider 模式 `/models` 的请求参数（可能阻塞读库，调用方按需
+/// `spawn_blocking`）。动态 token 类鉴权（Copilot / 各家 OAuth）返回 Err——
+/// 调用方据此回落到空列表 / 手动输入。
+pub fn prepare_upstream_models(
+    db: &Database,
+    namespace: &AppType,
+    provider_id: &str,
+) -> Result<UpstreamModelsRequest, String> {
+    use crate::proxy::providers::{get_adapter, AuthStrategy};
+
+    let provider = db
+        .get_provider_by_id(provider_id, namespace.as_str())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "供应商不存在或不属于该命名空间".to_string())?;
+
+    let adapter = get_adapter(namespace).ok_or_else(|| "该命名空间无适配器".to_string())?;
+    let base_url = adapter.extract_base_url(&provider).map_err(|e| e.to_string())?;
+    let auth = adapter
+        .extract_auth(&provider)
+        .ok_or_else(|| "供应商未配置可用的密钥".to_string())?;
+
+    // 静态 key 才能直接拉 /models；动态 token 类鉴权交回调用方处理。
+    let api_format = match auth.strategy {
+        AuthStrategy::Anthropic => Some("anthropic-messages"),
+        AuthStrategy::Google => Some("google-generative-ai"),
+        AuthStrategy::ClaudeAuth | AuthStrategy::Bearer => None,
+        other => {
+            return Err(format!(
+                "该供应商使用 {other:?} 鉴权（需动态取 token），无法拉取模型列表"
+            ))
+        }
+    };
+    Ok(UpstreamModelsRequest {
+        base_url,
+        api_key: auth.api_key,
+        api_format,
+    })
+}
+
 /// 单个 namespace 的前端视图。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -267,7 +447,11 @@ pub struct GatewayNamespaceInfo {
     pub namespace: String,
     /// URL 前缀（如 "/gateway/claude"）
     pub path_prefix: String,
-    /// 该 namespace 的模型目录（空 = 该端点所有请求 404）
+    /// 该 namespace 的路由模式（model 目录 / provider 透传）
+    pub mode: GatewayMode,
+    /// provider 模式下的默认供应商 id（model 模式或未配置为 None）
+    pub default_provider_id: Option<String>,
+    /// 该 namespace 的模型目录（model 模式下：空 = 该端点所有请求 404）
     pub catalog: Vec<GatewayCatalogEntry>,
 }
 
@@ -296,9 +480,21 @@ pub fn get_gateway_info(db: &Database) -> Result<GatewayInfo, AppError> {
 
     for namespace in GATEWAY_NAMESPACES {
         let catalog = get_gateway_catalog(db, &namespace)?;
+        let mode = get_gateway_mode(db, &namespace)?;
+        // 默认供应商只在 provider 模式下有意义；model 模式一律报 None，免得前端
+        // 在两种模式间显示同一个残留值。
+        let default_provider_id = match mode {
+            GatewayMode::Provider => db
+                .get_setting(&default_provider_setting_key(namespace.as_str()))?
+                .map(|raw| raw.trim().to_string())
+                .filter(|id| !id.is_empty()),
+            GatewayMode::Model => None,
+        };
         namespaces.push(GatewayNamespaceInfo {
             namespace: namespace.as_str().to_string(),
             path_prefix: gateway_path_prefix(namespace.as_str()),
+            mode,
+            default_provider_id,
             catalog,
         });
     }
@@ -425,5 +621,111 @@ mod tests {
 
         let round = serde_json::to_string(&parsed).unwrap();
         assert_eq!(round, json);
+    }
+
+    #[test]
+    fn gateway_mode_parse_defaults_unknown_to_model() {
+        assert_eq!(GatewayMode::parse(""), GatewayMode::Model);
+        assert_eq!(GatewayMode::parse("model"), GatewayMode::Model);
+        assert_eq!(GatewayMode::parse("provider"), GatewayMode::Provider);
+        // 未识别值退回严格模式（安全侧：最坏 404，不会把流量发给某供应商）。
+        assert_eq!(GatewayMode::parse("garbage"), GatewayMode::Model);
+    }
+
+    #[test]
+    fn mode_and_default_provider_keys_are_namespace_scoped() {
+        assert_eq!(mode_setting_key("claude"), "gateway_mode_claude");
+        assert_ne!(mode_setting_key("claude"), mode_setting_key("codex"));
+        assert_eq!(
+            default_provider_setting_key("claude"),
+            "gateway_default_provider_claude"
+        );
+        assert_ne!(
+            default_provider_setting_key("claude"),
+            default_provider_setting_key("gemini")
+        );
+    }
+
+    fn seed_provider(db: &Database, app_type: &str, id: &str) {
+        let provider =
+            Provider::with_id(id.to_string(), id.to_string(), serde_json::json!({}), None);
+        db.save_provider(app_type, &provider).expect("seed provider");
+    }
+
+    #[test]
+    fn gateway_mode_defaults_to_model_on_fresh_db() {
+        let db = Database::memory().expect("memory db");
+        // 老库无该键：必须读成 Model（缺省），保证升级零行为变化。
+        let mode = get_gateway_mode(&db, &AppType::Claude).unwrap();
+        assert_eq!(mode, GatewayMode::Model);
+        let provider = get_gateway_default_provider(&db, &AppType::Claude).unwrap();
+        assert!(provider.is_none());
+    }
+
+    #[test]
+    fn provider_mode_requires_a_provider_owned_by_the_namespace() {
+        let db = Database::memory().expect("memory db");
+        seed_provider(&db, "claude", "p1");
+
+        // 不给 id / 供应商不存在 / 越界引用别的 namespace —— 三种都拒绝。
+        let no_id = set_gateway_namespace_mode(&db, "claude", GatewayMode::Provider, None);
+        assert!(no_id.is_err());
+
+        let miss = set_gateway_namespace_mode(&db, "claude", GatewayMode::Provider, Some("x"));
+        assert!(miss.is_err());
+
+        seed_provider(&db, "codex", "c1");
+        let foreign = set_gateway_namespace_mode(&db, "claude", GatewayMode::Provider, Some("c1"));
+        assert!(foreign.is_err());
+
+        // 合法：本 namespace 的 provider。
+        let ok = set_gateway_namespace_mode(&db, "claude", GatewayMode::Provider, Some("p1"));
+        assert!(ok.is_ok());
+        let mode = get_gateway_mode(&db, &AppType::Claude).unwrap();
+        assert_eq!(mode, GatewayMode::Provider);
+        let provider = get_gateway_default_provider(&db, &AppType::Claude).unwrap();
+        assert_eq!(provider.id, "p1");
+    }
+
+    #[test]
+    fn switching_to_model_mode_clears_default_provider_but_not_catalog() {
+        let db = Database::memory().expect("memory db");
+        seed_provider(&db, "claude", "p1");
+        let entry = GatewayCatalogEntry {
+            model: "m".to_string(),
+            provider_id: "p1".to_string(),
+        };
+        let seeded = set_gateway_catalog(&db, "claude", &[entry]);
+        assert!(seeded.is_ok());
+
+        let on = set_gateway_namespace_mode(&db, "claude", GatewayMode::Provider, Some("p1"));
+        assert!(on.is_ok());
+        let back = set_gateway_namespace_mode(&db, "claude", GatewayMode::Model, None);
+        assert!(back.is_ok());
+
+        // 模式回到 Model，默认供应商清空，但目录还在（切回即恢复）。
+        let mode = get_gateway_mode(&db, &AppType::Claude).unwrap();
+        assert_eq!(mode, GatewayMode::Model);
+        let provider = get_gateway_default_provider(&db, &AppType::Claude).unwrap();
+        assert!(provider.is_none());
+        let catalog = get_gateway_catalog(&db, &AppType::Claude).unwrap();
+        assert_eq!(catalog.len(), 1);
+    }
+
+    #[test]
+    fn default_provider_deleted_yields_none_rather_than_error() {
+        // 供应商被删后，模式键仍指向它的 id（无人来清）。读取必须 Ok(None) 而非
+        // Err——调用方据此回 404，与 model 模式「陈旧目录条目等同未配置」一致。
+        let db = Database::memory().expect("memory db");
+        seed_provider(&db, "claude", "p1");
+        let on = set_gateway_namespace_mode(&db, "claude", GatewayMode::Provider, Some("p1"));
+        assert!(on.is_ok());
+
+        db.delete_provider("claude", "p1").expect("delete provider");
+
+        let mode = get_gateway_mode(&db, &AppType::Claude).unwrap();
+        assert_eq!(mode, GatewayMode::Provider);
+        let provider = get_gateway_default_provider(&db, &AppType::Claude).unwrap();
+        assert!(provider.is_none());
     }
 }

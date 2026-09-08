@@ -161,7 +161,7 @@ pub async fn handle_gateway_claude_messages(
         "Claude",
         "claude",
         Some("/gateway/claude"),
-        ProviderSelection::GatewayByModel {
+        ProviderSelection::GatewayRouted {
             model_from_uri: None,
         },
     )
@@ -201,11 +201,18 @@ pub async fn handle_claude_desktop_models(
     Ok(Json(response))
 }
 
-/// 网关 `/models` 目录端点：把某个 namespace 的模型目录按方言暴露给客户端。
+/// 网关 `/models` 端点：按该 namespace 的模式给出可暴露的模型列表。
 ///
-/// 三条薄封装（OpenAI 形 / Anthropic 形 / Gemini 形）共用这一个读取 + 鉴权：
-/// 目录里有哪些 model，这里就列哪些；目录为空则返回空列表（与路由侧"空目录
-/// 一律 404"一致——没有可暴露的模型，也就没有可列的模型）。
+/// - **model 模式**：目录里有哪些 model 就列哪些；目录为空则返回空列表（与路由侧
+///   "空目录一律 404"一致——没有可暴露的模型，也就没有可列的模型）。
+/// - **provider 模式**：没有目录可列，实时去问上游要一份（复用设置页那条
+///   `prepare_upstream_models` + `fetch_models` 链路，key 不出本机后端）。
+///
+/// provider 模式下列不出来就返回**空列表**而非 5xx：这是只读辅助端点，动态 token
+/// 类鉴权（Copilot / 各家 OAuth）本就拉不了、上游也可能不可达，把客户端打成 500 不
+/// 合理——它顶多选不了模型名，请求本身仍然能发。
+///
+/// 三条方言封装（OpenAI 形 / Anthropic 形 / Gemini 形）共用这一个读取 + 鉴权。
 ///
 /// 静态段路由优先于 `/gateway/gemini/v1beta/*path` 的 catch-all（matchit 匹配
 /// 优先级），因此 `/models` 不会被当成 Gemini 转发请求。
@@ -215,6 +222,52 @@ async fn gateway_catalog_models(
     namespace: AppType,
 ) -> Result<Vec<String>, ProxyError> {
     validate_gateway_auth(state, headers)?;
+
+    let mode = crate::services::gateway::get_gateway_mode(state.db.as_ref(), &namespace)
+        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+
+    if matches!(mode, crate::services::gateway::GatewayMode::Provider) {
+        let provider = crate::services::gateway::get_gateway_default_provider(
+            state.db.as_ref(),
+            &namespace,
+        )
+        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+        // provider 被删（None）→ 没得上游可问，空列表（与「目录空 = 空列表」对称）。
+        let Some(provider) = provider else {
+            return Ok(Vec::new());
+        };
+        // 同步准备段（读库 + adapter 提取）返回 owned 参数，db 借用到此结束，
+        // 之后的 await 不持有借用——故本 handler 仍是 Send。
+        let req = match crate::services::gateway::prepare_upstream_models(
+            state.db.as_ref(),
+            &namespace,
+            &provider.id,
+        ) {
+            Ok(req) => req,
+            Err(e) => {
+                log::warn!("[Gateway] {} provider 模式无法拉取模型列表: {e}", namespace.as_str());
+                return Ok(Vec::new());
+            }
+        };
+        return match crate::services::model_fetch::fetch_models(
+            &req.base_url,
+            &req.api_key,
+            false,
+            None,
+            None,
+            req.api_format,
+            None,
+        )
+        .await
+        {
+            Ok(models) => Ok(models.into_iter().map(|m| m.id).collect()),
+            Err(e) => {
+                log::warn!("[Gateway] {} 拉取上游模型列表失败: {e}", namespace.as_str());
+                Ok(Vec::new())
+            }
+        };
+    }
+
     let catalog = crate::services::gateway::get_gateway_catalog(state.db.as_ref(), &namespace)
         .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
     Ok(catalog.into_iter().map(|entry| entry.model).collect())
@@ -982,7 +1035,7 @@ pub async fn handle_gateway_codex_chat(
     handle_chat_completions_for_app(
         state,
         request,
-        ProviderSelection::GatewayByModel {
+        ProviderSelection::GatewayRouted {
             model_from_uri: None,
         },
     )
@@ -1094,7 +1147,7 @@ pub async fn handle_gateway_codex_responses(
         AppType::Codex,
         "Codex",
         "codex",
-        ProviderSelection::GatewayByModel {
+        ProviderSelection::GatewayRouted {
             model_from_uri: None,
         },
     )
@@ -1113,7 +1166,7 @@ pub async fn handle_gateway_grokbuild_responses(
         AppType::GrokBuild,
         "Grok Build",
         "grokbuild",
-        ProviderSelection::GatewayByModel {
+        ProviderSelection::GatewayRouted {
             model_from_uri: None,
         },
     )
@@ -2331,6 +2384,9 @@ fn codex_proxy_error_code(error: &ProxyError) -> &'static str {
         // 网关目录未命中该 model（HTTP 404）：与「配置错误」「请求非法」都不同，
         // 单列一个 code，客户端据此区分"换个模型名再试"和"请求本身有问题"。
         ProxyError::ModelNotFound(_) => "cc_switch_model_not_found",
+        // provider 模式下没配默认供应商（HTTP 404）：与「model 不在目录里」分开，
+        // 免得客户端以为是自己的模型名写错了。
+        ProxyError::NoGatewayProvider => "cc_switch_no_gateway_provider",
         ProxyError::AuthError(_) => "cc_switch_auth_error",
         ProxyError::UpstreamError { .. } => "cc_switch_upstream_error",
         ProxyError::DatabaseError(_) => "cc_switch_database_error",
@@ -2394,7 +2450,7 @@ pub async fn handle_gateway_gemini(
         state,
         uri,
         request,
-        ProviderSelection::GatewayByModel { model_from_uri },
+        ProviderSelection::GatewayRouted { model_from_uri },
     )
     .await
 }
@@ -2405,7 +2461,7 @@ async fn handle_gemini_for_app(
     request: axum::extract::Request,
     selection: ProviderSelection,
 ) -> Result<axum::response::Response, ProxyError> {
-    let is_gateway = matches!(selection, ProviderSelection::GatewayByModel { .. });
+    let is_gateway = matches!(selection, ProviderSelection::GatewayRouted { .. });
 
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();

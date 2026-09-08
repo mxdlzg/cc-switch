@@ -43,6 +43,7 @@ import {
   useSetGatewayToken,
   useSetGatewayEnabled,
   useSetGatewayCatalog,
+  useSetGatewayNamespaceMode,
 } from "@/lib/query/gateway";
 import type {
   GatewayCatalogEntry,
@@ -58,8 +59,13 @@ import { useProxyStatusQuery, useGlobalProxyConfig } from "@/lib/query/proxy";
  * 已有的供应商 + 协议转换能力，用一个 Bearer token 额外暴露成 `/gateway/*` 端点，
  * 供第三方工具接入。因此这里的开关与首页供应商选择、接管开关完全解耦。
  *
- * 每个 namespace 持有一张 model → provider 目录：客户端请求某 model 命中目录才
- * 路由，未命中（含空目录）一律 404。目录以「草稿 + 保存」方式编辑。
+ * 每个 namespace 各自选一种路由模式：
+ * - **model 模式**（缺省）：持有一张 model → provider 目录，请求命中才路由，
+ *   未命中（含空目录）一律 404。目录以「草稿 + 保存」方式编辑。
+ * - **provider 模式**：整条 namespace 流量透传给一个默认供应商，不查目录、不 404。
+ *
+ * 切模式不销毁另一模式的配置（目录原样保留，切回即恢复），所以这里的模式切换
+ * 即时生效、不参与目录的草稿脏检查。
  */
 
 /** namespace → 展示用方言标签。 */
@@ -131,11 +137,14 @@ interface NamespaceCatalogProps {
 }
 
 /**
- * 单个 namespace 的目录编辑器。
+ * 单个 namespace 的路由编辑器（模式切换 + model 模式下的目录草稿）。
  *
- * 持有本地草稿（draft），点「保存」才整表覆盖写入——避免每勾一个模型就发一次
- * 全量覆盖 mutation。草稿初值来自服务端目录；本组件按 namespace 加 key 挂载，
+ * 目录部分持有本地草稿（draft），点「保存」才整表覆盖写入——避免每勾一个模型就发
+ * 一次全量覆盖 mutation。草稿初值来自服务端目录；本组件按 namespace 加 key 挂载，
  * 重新进入面板即与服务端对齐。
+ *
+ * 模式与默认供应商则**即时**写入，不参与目录的脏检查：它不动目录，失败的代价只是
+ * 模式没变（后端拒绝越界引用的供应商）。
  */
 function NamespaceCatalog({
   ns,
@@ -145,6 +154,9 @@ function NamespaceCatalog({
 }: NamespaceCatalogProps) {
   const { t } = useTranslation();
   const setCatalog = useSetGatewayCatalog();
+  const setMode = useSetGatewayNamespaceMode();
+
+  const isProviderMode = ns.mode === "provider";
 
   const [draft, setDraft] = useState<GatewayCatalogEntry[]>(ns.catalog);
   // 拉取模型列表的「来源供应商」——勾选/手动添加的条目都归到它名下。纯 UI 态，
@@ -212,241 +224,356 @@ function NamespaceCatalog({
   const save = () =>
     setCatalog.mutate({ namespace: ns.namespace, entries: draft });
 
+  /**
+   * 模式下拉框的唯一入口：`"model"` 选项目录模式，其余值都是供应商 id。
+   *
+   * 两种模式共用一个下拉框，所以「选某个供应商」本身就等于「切到 provider 模式
+   * 并把默认供应商设成它」——没有「模式已切但还没选供应商」的中间态可表示。
+   * 切回 model 模式只清后端默认供应商键，**不动目录**（见 gateway 服务层）。
+   */
+  const changeMode = (value: string) => {
+    if (value === "model") {
+      setMode.mutate({ namespace: ns.namespace, mode: "model" });
+      return;
+    }
+    setMode.mutate({
+      namespace: ns.namespace,
+      mode: "provider",
+      defaultProviderId: value,
+    });
+  };
+
   const fetchedModels = modelsQuery.data ?? [];
+
+  // provider 模式下解析不出可用供应商的两种成因都要告警 + 显示占位符（而不是把
+  // 那个已失效的 id 印在触发器上，看着像个可用选项）：没配过 id，或挑过的那张卡
+  // 被删了。后端此时都读成「未配置」，该 namespace 全部 404。
+  const defaultProviderMissing =
+    isProviderMode && !providers.some((p) => p.id === ns.defaultProviderId);
+  const modeValue = isProviderMode
+    ? defaultProviderMissing
+      ? ""
+      : (ns.defaultProviderId ?? "")
+    : "model";
 
   return (
     <div className="rounded-lg border border-border bg-card/50 p-4 space-y-3">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-semibold capitalize">{ns.namespace}</span>
         <Badge variant="secondary" className="font-normal">
           {NAMESPACE_LABELS[ns.namespace] ?? ns.namespace}
         </Badge>
-      </div>
-
-      {/* 模型来源供应商：拉取列表 + 新条目的归属 */}
-      <div className="space-y-1.5">
-        <Label className="text-xs text-muted-foreground">
-          {t("gateway.catalog.sourceLabel", {
-            defaultValue: "模型来源供应商（用于拉取列表 / 归属新条目）",
-          })}
-        </Label>
-        <Select
-          value={sourceProviderId ?? NONE_VALUE}
-          onValueChange={(value) =>
-            setSourceId(value === NONE_VALUE ? "" : value)
-          }
-          disabled={providers.length === 0}
-        >
-          <SelectTrigger className="w-full">
-            <SelectValue
-              placeholder={
-                providers.length === 0
-                  ? t("gateway.provider.noneAvailable", {
-                      defaultValue: "该应用下还没有供应商",
-                    })
-                  : t("gateway.provider.pick", {
-                      defaultValue: "选择供应商…",
-                    })
-              }
-            />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE_VALUE}>
-              {t("gateway.provider.unset", { defaultValue: "（未选择）" })}
-            </SelectItem>
-            {providers.map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      {/* 拉取模型列表 → 勾选暴露 */}
-      {sourceProviderId && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <Label className="text-xs text-muted-foreground">
-              {t("gateway.catalog.fetchLabel", {
-                defaultValue: "从该供应商拉取的模型（勾选以暴露）",
-              })}
-            </Label>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-xs"
-              onClick={selectAllFetched}
-              disabled={fetchedModels.length === 0}
+        {/* 路由模式 + 默认供应商，同一个下拉框：model 模式 / 某个供应商。 */}
+        <div className="ml-auto flex items-center gap-2">
+          <Label
+            className="text-xs text-muted-foreground"
+            htmlFor={`gateway-mode-${ns.namespace}`}
+          >
+            {t("gateway.mode.label", { defaultValue: "路由模式" })}
+          </Label>
+          <Select
+            value={modeValue}
+            onValueChange={changeMode}
+            disabled={setMode.isPending}
+          >
+            <SelectTrigger
+              id={`gateway-mode-${ns.namespace}`}
+              className="w-[220px]"
             >
-              {t("gateway.catalog.selectAll", { defaultValue: "全选" })}
-            </Button>
-          </div>
-
-          {modelsQuery.isFetching ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {t("gateway.catalog.fetching", { defaultValue: "正在拉取…" })}
-            </div>
-          ) : modelsQuery.isError ? (
-            <p className="text-xs text-yellow-600 dark:text-yellow-400">
-              {t("gateway.catalog.fetchFailed", {
-                error:
-                  (modelsQuery.error as Error)?.message ??
-                  t("gateway.catalog.unknownError", {
-                    defaultValue: "未知错误",
-                  }),
-                defaultValue: "拉取失败：{{error}}。可在下方手动填写模型名。",
-              })}
-            </p>
-          ) : fetchedModels.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              {t("gateway.catalog.fetchEmpty", {
-                defaultValue: "该供应商未返回模型列表，可在下方手动填写。",
-              })}
-            </p>
-          ) : (
-            <ScrollArea className="h-40 rounded border border-border/60">
-              <div className="divide-y divide-border/40">
-                {fetchedModels.map((m) => (
-                  <label
-                    key={m.id}
-                    className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-muted/40"
-                  >
-                    <Checkbox
-                      checked={draftModels.has(m.id)}
-                      onCheckedChange={(checked) => toggleModel(m.id, checked)}
-                    />
-                    <span className="font-mono text-xs truncate">{m.id}</span>
-                  </label>
-                ))}
-              </div>
-            </ScrollArea>
-          )}
+              <SelectValue
+                placeholder={t("gateway.provider.pickDefault", {
+                  defaultValue: "选择默认供应商…",
+                })}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="model">
+                {t("gateway.mode.model", {
+                  defaultValue: "按模型目录（未列出 404）",
+                })}
+              </SelectItem>
+              {providers.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {t("gateway.mode.providerItem", {
+                    name: p.name,
+                    defaultValue: "全部转给：{{name}}",
+                  })}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
+      </div>
+
+      {!isProviderMode ? (
+        <p className="text-xs text-muted-foreground">
+          {t("gateway.mode.modelHint", {
+            defaultValue: "客户端请求的模型名命中目录才转发，未命中一律 404。",
+          })}
+        </p>
+      ) : (
+        !defaultProviderMissing && (
+          <p className="text-xs text-muted-foreground">
+            {t("gateway.mode.providerHint", {
+              defaultValue:
+                "任意模型名都会原样转发给所选供应商（不查目录、不返回 404）。切回目录模式不影响已保存的模型目录。",
+            })}
+          </p>
+        )
       )}
 
-      {/* 手动添加（动态 token 供应商 / 未列出的模型兜底） */}
-      <div className="space-y-1.5">
-        <Label className="text-xs text-muted-foreground">
-          {t("gateway.catalog.manualLabel", { defaultValue: "手动添加模型" })}
-        </Label>
-        <div className="flex items-center gap-2">
-          <Input
-            value={manualModel}
-            onChange={(e) => setManualModel(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addManual();
-              }
-            }}
-            placeholder={t("gateway.catalog.manualPlaceholder", {
-              defaultValue: "模型名，如 claude-opus-4-1",
-            })}
-            disabled={!sourceProviderId}
-            className="font-mono text-sm"
-          />
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={addManual}
-            disabled={
-              !sourceProviderId ||
-              !manualModel.trim() ||
-              draftModels.has(manualModel.trim())
-            }
-          >
-            <Plus className="mr-1.5 h-4 w-4" />
-            {t("common.add", { defaultValue: "添加" })}
-          </Button>
-        </div>
-        {!sourceProviderId && (
-          <p className="text-xs text-muted-foreground">
-            {t("gateway.catalog.needSource", {
-              defaultValue: "先选择来源供应商，每个模型都要归属一个供应商。",
-            })}
-          </p>
-        )}
-      </div>
+      {defaultProviderMissing && (
+        <p className="text-xs text-yellow-600 dark:text-yellow-400">
+          {providers.length === 0
+            ? t("gateway.provider.noneAvailableWarning", {
+                defaultValue:
+                  "该应用下已没有供应商，供应商模式无法转发任何请求（全部 404）。请先在首页添加供应商。",
+              })
+            : t("gateway.mode.providerMissingWarning", {
+                defaultValue:
+                  "所选供应商已被删除：该端点所有请求都会返回 404，请在上方重新选择一个供应商。",
+              })}
+        </p>
+      )}
 
-      {/* 当前目录（草稿） */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <Label className="text-xs text-muted-foreground">
-            {t("gateway.catalog.currentLabel", {
-              defaultValue: "当前目录（{{count}}）",
-              count: draft.length,
-            })}
-          </Label>
-          {draft.length > 0 && (
+      {/* provider 模式：目录编辑器与空目录告警都不显示（路由根本不读它）。 */}
+      {!isProviderMode && (
+        <>
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">
+              {t("gateway.catalog.sourceLabel", {
+                defaultValue: "模型来源供应商（用于拉取列表 / 归属新条目）",
+              })}
+            </Label>
+            <Select
+              value={sourceProviderId ?? NONE_VALUE}
+              onValueChange={(value) =>
+                setSourceId(value === NONE_VALUE ? "" : value)
+              }
+              disabled={providers.length === 0}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue
+                  placeholder={
+                    providers.length === 0
+                      ? t("gateway.provider.noneAvailable", {
+                          defaultValue: "该应用下还没有供应商",
+                        })
+                      : t("gateway.provider.pick", {
+                          defaultValue: "选择供应商…",
+                        })
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NONE_VALUE}>
+                  {t("gateway.provider.unset", { defaultValue: "（未选择）" })}
+                </SelectItem>
+                {providers.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* 拉取模型列表 → 勾选暴露 */}
+          {sourceProviderId && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-xs text-muted-foreground">
+                  {t("gateway.catalog.fetchLabel", {
+                    defaultValue: "从该供应商拉取的模型（勾选以暴露）",
+                  })}
+                </Label>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  onClick={selectAllFetched}
+                  disabled={fetchedModels.length === 0}
+                >
+                  {t("gateway.catalog.selectAll", { defaultValue: "全选" })}
+                </Button>
+              </div>
+
+              {modelsQuery.isFetching ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {t("gateway.catalog.fetching", { defaultValue: "正在拉取…" })}
+                </div>
+              ) : modelsQuery.isError ? (
+                <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                  {t("gateway.catalog.fetchFailed", {
+                    error:
+                      (modelsQuery.error as Error)?.message ??
+                      t("gateway.catalog.unknownError", {
+                        defaultValue: "未知错误",
+                      }),
+                    defaultValue:
+                      "拉取失败：{{error}}。可在下方手动填写模型名。",
+                  })}
+                </p>
+              ) : fetchedModels.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {t("gateway.catalog.fetchEmpty", {
+                    defaultValue: "该供应商未返回模型列表，可在下方手动填写。",
+                  })}
+                </p>
+              ) : (
+                <ScrollArea className="h-40 rounded border border-border/60">
+                  <div className="divide-y divide-border/40">
+                    {fetchedModels.map((m) => (
+                      <label
+                        key={m.id}
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-muted/40"
+                      >
+                        <Checkbox
+                          checked={draftModels.has(m.id)}
+                          onCheckedChange={(checked) =>
+                            toggleModel(m.id, checked)
+                          }
+                        />
+                        <span className="font-mono text-xs truncate">
+                          {m.id}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </ScrollArea>
+              )}
+            </div>
+          )}
+
+          {/* 手动添加（动态 token 供应商 / 未列出的模型兜底） */}
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">
+              {t("gateway.catalog.manualLabel", {
+                defaultValue: "手动添加模型",
+              })}
+            </Label>
+            <div className="flex items-center gap-2">
+              <Input
+                value={manualModel}
+                onChange={(e) => setManualModel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addManual();
+                  }
+                }}
+                placeholder={t("gateway.catalog.manualPlaceholder", {
+                  defaultValue: "模型名，如 claude-opus-4-1",
+                })}
+                disabled={!sourceProviderId}
+                className="font-mono text-sm"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={addManual}
+                disabled={
+                  !sourceProviderId ||
+                  !manualModel.trim() ||
+                  draftModels.has(manualModel.trim())
+                }
+              >
+                <Plus className="mr-1.5 h-4 w-4" />
+                {t("common.add", { defaultValue: "添加" })}
+              </Button>
+            </div>
+            {!sourceProviderId && (
+              <p className="text-xs text-muted-foreground">
+                {t("gateway.catalog.needSource", {
+                  defaultValue:
+                    "先选择来源供应商，每个模型都要归属一个供应商。",
+                })}
+              </p>
+            )}
+          </div>
+
+          {/* 当前目录（草稿） */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-xs text-muted-foreground">
+                {t("gateway.catalog.currentLabel", {
+                  defaultValue: "当前目录（{{count}}）",
+                  count: draft.length,
+                })}
+              </Label>
+              {draft.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setDraft([])}
+                >
+                  {t("gateway.catalog.clear", { defaultValue: "清空" })}
+                </Button>
+              )}
+            </div>
+
+            {draft.length === 0 ? (
+              <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                {t("gateway.catalog.emptyWarning", {
+                  defaultValue: "目录为空：该端点所有请求都会返回 404。",
+                })}
+              </p>
+            ) : (
+              <ScrollArea className="max-h-48 rounded border border-border/60">
+                <div className="divide-y divide-border/40">
+                  {draft.map((e) => (
+                    <div
+                      key={e.model}
+                      className="flex items-center gap-2 px-3 py-1.5 text-sm"
+                    >
+                      <span className="font-mono text-xs flex-1 truncate">
+                        {e.model}
+                      </span>
+                      <span className="text-xs text-muted-foreground truncate max-w-[45%]">
+                        → {providerNameOf(e.providerId)}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 w-7 p-0 text-muted-foreground hover:text-red-500"
+                        onClick={() => removeEntry(e.model)}
+                        aria-label={t("gateway.catalog.remove", {
+                          defaultValue: "移除",
+                        })}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            )}
+          </div>
+
+          {/* 保存 */}
+          <div className="flex items-center justify-end gap-2 pt-1">
+            {dirty && (
+              <span className="text-xs text-muted-foreground">
+                {t("gateway.catalog.unsaved", {
+                  defaultValue: "有未保存的改动",
+                })}
+              </span>
+            )}
             <Button
               size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-xs"
-              onClick={() => setDraft([])}
+              onClick={save}
+              disabled={!dirty || setCatalog.isPending}
             >
-              {t("gateway.catalog.clear", { defaultValue: "清空" })}
+              {setCatalog.isPending ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : null}
+              {t("common.save", { defaultValue: "保存" })}
             </Button>
-          )}
-        </div>
-
-        {draft.length === 0 ? (
-          <p className="text-xs text-yellow-600 dark:text-yellow-400">
-            {t("gateway.catalog.emptyWarning", {
-              defaultValue: "目录为空：该端点所有请求都会返回 404。",
-            })}
-          </p>
-        ) : (
-          <ScrollArea className="max-h-48 rounded border border-border/60">
-            <div className="divide-y divide-border/40">
-              {draft.map((e) => (
-                <div
-                  key={e.model}
-                  className="flex items-center gap-2 px-3 py-1.5 text-sm"
-                >
-                  <span className="font-mono text-xs flex-1 truncate">
-                    {e.model}
-                  </span>
-                  <span className="text-xs text-muted-foreground truncate max-w-[45%]">
-                    → {providerNameOf(e.providerId)}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 w-7 p-0 text-muted-foreground hover:text-red-500"
-                    onClick={() => removeEntry(e.model)}
-                    aria-label={t("gateway.catalog.remove", {
-                      defaultValue: "移除",
-                    })}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </ScrollArea>
-        )}
-      </div>
-
-      {/* 保存 */}
-      <div className="flex items-center justify-end gap-2 pt-1">
-        {dirty && (
-          <span className="text-xs text-muted-foreground">
-            {t("gateway.catalog.unsaved", { defaultValue: "有未保存的改动" })}
-          </span>
-        )}
-        <Button
-          size="sm"
-          onClick={save}
-          disabled={!dirty || setCatalog.isPending}
-        >
-          {setCatalog.isPending ? (
-            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-          ) : null}
-          {t("common.save", { defaultValue: "保存" })}
-        </Button>
-      </div>
+          </div>
+        </>
+      )}
 
       {/* base URL */}
       <div className="space-y-1.5 pt-1 border-t border-border/40">

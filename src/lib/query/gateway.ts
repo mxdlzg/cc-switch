@@ -1,5 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { gatewayApi, type GatewayCatalogEntry } from "@/lib/api/gateway";
+import {
+  gatewayApi,
+  type GatewayCatalogEntry,
+  type GatewayMode,
+} from "@/lib/api/gateway";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 
@@ -116,6 +120,42 @@ export function useSetGatewayCatalog() {
         t("gateway.toast.catalogSetFailed", {
           error: error.message,
           defaultValue: `保存网关模型目录失败: ${error.message}`,
+        }),
+      );
+    },
+  });
+}
+
+/**
+ * 设置某个 namespace 的路由模式（model 目录 / provider 透传）及其默认供应商。
+ *
+ * 与目录的 draft-then-save 不同，模式切换**即时生效**、无需脏检查：它不动目录，
+ * 失败的代价只是模式没变（后端拒绝越界引用的 provider），所以直接发、失败回滚
+ * 到查询里的真值即可。
+ */
+export function useSetGatewayNamespaceMode() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({
+      namespace,
+      mode,
+      defaultProviderId,
+    }: {
+      namespace: string;
+      mode: GatewayMode;
+      defaultProviderId?: string | null;
+    }) =>
+      gatewayApi.setGatewayNamespaceMode(namespace, mode, defaultProviderId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: gatewayKeys.info });
+    },
+    onError: (error: Error) => {
+      toast.error(
+        t("gateway.toast.modeSetFailed", {
+          error: error.message,
+          defaultValue: `设置网关路由模式失败: ${error.message}`,
         }),
       );
     },

@@ -87,17 +87,18 @@ pub struct RequestContext {
 pub enum ProviderSelection {
     /// 普通流量：走该 app 的 current provider / 故障转移队列 + 熔断器。
     AppCurrent,
-    /// `/gateway/*` 流量：按请求模型查该 namespace 的模型目录选 provider。
+    /// `/gateway/*` 流量：按该 namespace 的模式选 provider——model 模式查目录、
+    /// provider 模式取默认供应商（见 `services::gateway`）。
     ///
     /// namespace 即 `RequestContext::new` 收到的 `app_type`（入口层保证二者一致），
     /// 因此这里不重复携带，杜绝"namespace 与 app_type 不一致"的错配。
     ///
     /// 解析结果永远是单元素链路、不查熔断器、不走故障转移队列——与接管侧完全
-    /// 隔离，首页切换供应商不影响网关，反之亦然。未命中目录 → 404（严格模式，
-    /// 不回落该 app 的当前供应商）。
-    GatewayByModel {
+    /// 隔离，首页切换供应商不影响网关，反之亦然。
+    GatewayRouted {
         /// Gemini 的模型名在 URI 而非 body，由入口先行解析传入；
         /// 其余方言传 None，由 `RequestContext::new` 从 `body["model"]` 读取。
+        /// provider 模式不依赖模型名，仅在日志/usage 归因时用到。
         model_from_uri: Option<String>,
     },
 }
@@ -161,44 +162,63 @@ impl RequestContext {
             session_result.client_provided
         );
 
-        let is_gateway = matches!(selection, ProviderSelection::GatewayByModel { .. });
+        let is_gateway = matches!(selection, ProviderSelection::GatewayRouted { .. });
 
         let (providers, current_provider_id, request_model) = match selection {
-            // 网关：按请求模型查该 namespace 的模型目录选供应商。
+            // 网关：按该 namespace 的模式选供应商。
             //
-            // 模型名来源：Gemini 在 URI（入口已解析传入），其余方言在 body。
-            // 两处都取不到模型名（如 Gemini 的 `GET /v1beta/models` 列表端点）时
-            // 不能路由——目录按 model 匹配，没有 model 就无从匹配，直接 400。
+            // - provider 模式：整条流量给默认供应商，模型名原样送达（forwarder 对
+            //   网关流量本就不做模型映射），没有模型名也照常路由。
+            // - model 模式：按请求模型查目录精确匹配，未命中 404（严格模式，不回落
+            //   该 app 的当前供应商）。模型名来源：Gemini 在 URI（入口已解析传入），
+            //   其余在 body；两处都取不到（如 Gemini 的 GET /v1beta/models）无法匹配，400。
             //
-            // 命中目录后 `current_provider_id` 被设为该供应商自身，使 forwarder 里的
+            // 命中后 `current_provider_id` 被设为该供应商自身，使 forwarder 里的
             // `should_switch`（`current_provider_id_at_start != provider.id`）恒为
             // false —— 从而不会触发 `failover_manager.try_switch`
             // → `hot_switch_provider` → 写 Live 配置文件的链路。
             //
             // 供应商健康度/熔断器另由 `RequestForwarder::is_gateway` 屏蔽。
-            ProviderSelection::GatewayByModel { model_from_uri } => {
-                let model = model_from_uri
-                    .or_else(|| {
-                        body.get("model")
-                            .and_then(|m| m.as_str())
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_string)
-                    })
-                    .ok_or_else(|| ProxyError::ConfigError("网关请求未携带模型名".to_string()))?;
+            ProviderSelection::GatewayRouted { model_from_uri } => {
+                let body_model = || {
+                    body.get("model")
+                        .and_then(|m| m.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                };
+                let mode = crate::services::gateway::get_gateway_mode(state.db.as_ref(), &app_type)
+                    .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
 
-                let provider = crate::services::gateway::resolve_gateway_provider(
-                    state.db.as_ref(),
-                    &app_type,
-                    &model,
-                )
-                .map_err(|e| ProxyError::DatabaseError(e.to_string()))?
-                .ok_or_else(|| ProxyError::ModelNotFound(model.clone()))?;
+                if matches!(mode, crate::services::gateway::GatewayMode::Provider) {
+                    let provider = crate::services::gateway::get_gateway_default_provider(
+                        state.db.as_ref(),
+                        &app_type,
+                    )
+                    .map_err(|e| ProxyError::DatabaseError(e.to_string()))?
+                    .ok_or(ProxyError::NoGatewayProvider)?;
+                    // 模型名只用于日志/usage，取不到就沿用 request_model 的 "unknown"。
+                    let model = model_from_uri.or_else(body_model).unwrap_or(request_model);
+                    let id = provider.id.clone();
+                    (vec![provider], id, model)
+                } else {
+                    let model = model_from_uri.or_else(body_model).ok_or_else(|| {
+                        ProxyError::ConfigError("网关请求未携带模型名".to_string())
+                    })?;
 
-                // 目录命中的模型名就是本次请求的模型名，比 request_model
-                // （可能回落到 "unknown"）更准确，用它做日志与 usage 归因。
-                let id = provider.id.clone();
-                (vec![provider], id, model)
+                    let provider = crate::services::gateway::resolve_gateway_provider(
+                        state.db.as_ref(),
+                        &app_type,
+                        &model,
+                    )
+                    .map_err(|e| ProxyError::DatabaseError(e.to_string()))?
+                    .ok_or_else(|| ProxyError::ModelNotFound(model.clone()))?;
+
+                    // 目录命中的模型名就是本次请求的模型名，比 request_model
+                    // （可能回落到 "unknown"）更准确，用它做日志与 usage 归因。
+                    let id = provider.id.clone();
+                    (vec![provider], id, model)
+                }
             }
             // 普通流量：走该 app 的 current provider / 故障转移队列 + 熔断器。
             //

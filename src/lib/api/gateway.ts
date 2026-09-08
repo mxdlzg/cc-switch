@@ -15,12 +15,29 @@ export interface GatewayCatalogEntry {
   providerId: string;
 }
 
+/**
+ * 单个 namespace 的路由模式（每个 namespace 各自二选一）。
+ * - `"model"`（缺省）：按模型目录精确路由，未命中 404。
+ * - `"provider"`：整条流量透传给一个默认供应商，不查目录、不 404。
+ *
+ * 与后端 `GatewayMode` 的 serde 表示一致（lowercase）。
+ */
+export type GatewayMode = "model" | "provider";
+
 /** 单个 namespace 的网关视图（namespace 同 app_type，如 "claude"）。 */
 export interface GatewayNamespaceInfo {
   namespace: string;
   /** URL 前缀，如 "/gateway/claude" */
   pathPrefix: string;
-  /** 该 namespace 的模型目录（空 = 该端点所有请求 404） */
+  /** 该 namespace 的路由模式 */
+  mode: GatewayMode;
+  /** provider 模式下的默认供应商 id；model 模式或未配置为 null */
+  defaultProviderId: string | null;
+  /**
+   * 该 namespace 的模型目录。
+   * model 模式下空目录 = 该端点所有请求 404；provider 模式下不读它，但切模式
+   * 不会清空，所以来回切换能恢复已勾好的目录。
+   */
   catalog: GatewayCatalogEntry[];
 }
 
@@ -78,6 +95,24 @@ export const gatewayApi = {
     entries: GatewayCatalogEntry[],
   ): Promise<void> {
     return invoke("set_gateway_catalog", { namespace, entries });
+  },
+
+  /**
+   * 设置某个 namespace 的路由模式及其默认供应商。
+   *
+   * 切到 provider 模式必须带一个属于该 namespace 的 providerId（后端校验归属）；
+   * 切回 model 模式只清默认供应商，**不动模型目录**，所以来回切换不丢目录。
+   */
+  async setGatewayNamespaceMode(
+    namespace: string,
+    mode: GatewayMode,
+    defaultProviderId?: string | null,
+  ): Promise<void> {
+    return invoke("set_gateway_namespace_mode", {
+      namespace,
+      mode,
+      defaultProviderId: defaultProviderId ?? null,
+    });
   },
 
   /** 列出所有 namespace 的可选供应商。 */

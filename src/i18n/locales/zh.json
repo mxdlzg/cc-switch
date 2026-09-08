@@ -3042,7 +3042,9 @@
     "provider": {
       "pick": "选择供应商…",
       "unset": "（未选择）",
-      "noneAvailable": "该应用下还没有供应商"
+      "noneAvailable": "该应用下还没有供应商",
+      "pickDefault": "选择默认供应商…",
+      "noneAvailableWarning": "该应用下已没有供应商，供应商模式无法转发任何请求（全部 404）。请先在首页添加供应商。"
     },
     "catalog": {
       "sourceLabel": "模型来源供应商（用于拉取列表 / 归属新条目）",
@@ -3067,7 +3069,16 @@
     },
     "toast": {
       "tokenRotated": "访问令牌已重新生成，旧令牌立即失效",
-      "catalogSetFailed": "保存网关模型目录失败：{{error}}"
+      "catalogSetFailed": "保存网关模型目录失败：{{error}}",
+      "modeSetFailed": "设置网关路由模式失败：{{error}}"
+    },
+    "mode": {
+      "label": "路由模式",
+      "model": "按模型目录（未列出 404）",
+      "providerItem": "全部转给：{{name}}",
+      "modelHint": "客户端请求的模型名命中目录才转发，未命中一律 404。",
+      "providerHint": "任意模型名都会原样转发给所选供应商（不查目录、不返回 404）。切回目录模式不影响已保存的模型目录。",
+      "providerMissingWarning": "所选供应商已被删除：该端点所有请求都会返回 404，请重新选择一个供应商。"
     }
   },
   "proxyConfig": {

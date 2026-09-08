@@ -124,45 +124,51 @@ pub async fn get_gateway_provider_options(
 ///
 /// 需要动态取 token 的鉴权方式（Copilot / 各家 OAuth）无法用静态 key 拉模型，
 /// 返回明确错误，前端据此回落到手动输入。
+///
+/// 提取逻辑与网关 provider 模式的 `/models` 端点共用 `prepare_upstream_models`；
+/// 「请手动填写模型名」这类面向操作者的提示只在这里追加，机器调用的端点不需要。
 #[tauri::command]
 pub async fn get_gateway_provider_models(
     state: tauri::State<'_, AppState>,
     namespace: String,
     provider_id: String,
 ) -> Result<Vec<FetchedModel>, String> {
-    use crate::proxy::providers::{get_adapter, AuthStrategy};
-
     let db = state.db.clone();
-    let (base_url, api_key, api_format) = tauri::async_runtime::spawn_blocking(move || {
+    let req = tauri::async_runtime::spawn_blocking(move || {
         let app_type = gateway::parse_gateway_namespace(&namespace).map_err(|e| e.to_string())?;
-        let provider = db
-            .get_provider_by_id(&provider_id, app_type.as_str())
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "供应商不存在或不属于该命名空间".to_string())?;
-
-        let adapter = get_adapter(&app_type).ok_or_else(|| "该命名空间无适配器".to_string())?;
-        let base_url = adapter
-            .extract_base_url(&provider)
-            .map_err(|e| e.to_string())?;
-        let auth = adapter
-            .extract_auth(&provider)
-            .ok_or_else(|| "供应商未配置可用的密钥".to_string())?;
-
-        // 静态 key 才能直接拉 /models；动态 token 类鉴权交回前端手动输入。
-        let api_format = match auth.strategy {
-            AuthStrategy::Anthropic => Some("anthropic-messages"),
-            AuthStrategy::Google => Some("google-generative-ai"),
-            AuthStrategy::ClaudeAuth | AuthStrategy::Bearer => None,
-            other => {
-                return Err(format!(
-                    "该供应商使用 {other:?} 鉴权（需动态取 token），请手动填写模型名"
-                ))
-            }
-        };
-        Ok::<_, String>((base_url, auth.api_key, api_format))
+        gateway::prepare_upstream_models(&db, &app_type, &provider_id)
     })
     .await
-    .map_err(|e| format!("网关模型列表读取失败: {e}"))??;
+    .map_err(|e| format!("网关模型列表读取失败: {e}"))?
+    .map_err(|e| format!("{e}；请手动填写模型名"))?;
 
-    model_fetch::fetch_models(&base_url, &api_key, false, None, None, api_format, None).await
+    model_fetch::fetch_models(
+        &req.base_url,
+        &req.api_key,
+        false,
+        None,
+        None,
+        req.api_format,
+        None,
+    )
+    .await
+}
+
+/// 设置某个命名空间的路由模式（model 目录 / provider 透传）及其默认供应商。
+///
+/// 切到 provider 模式必须带一个属于该命名空间的供应商；切回 model 模式只清默认
+/// 供应商、**不动模型目录**，所以来回切换不丢已勾好的目录。
+#[tauri::command]
+pub async fn set_gateway_namespace_mode(
+    state: tauri::State<'_, AppState>,
+    namespace: String,
+    mode: gateway::GatewayMode,
+    default_provider_id: Option<String>,
+) -> Result<(), AppError> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        gateway::set_gateway_namespace_mode(&db, &namespace, mode, default_provider_id.as_deref())
+    })
+    .await
+    .map_err(|e| AppError::Message(format!("网关模式设置失败: {e}")))?
 }

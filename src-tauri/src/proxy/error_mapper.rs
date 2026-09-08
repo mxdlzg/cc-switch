@@ -61,6 +61,8 @@ pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
         // 网关目录未命中该 model：404 Not Found。必须与 error.rs 的 IntoResponse
         // 一致，否则该错误经此路径时会落到下面的 500 兜底。
         ProxyError::ModelNotFound(_) => 404,
+        // provider 模式下没配默认供应商：同为 404，理由同上（别让兜底吞成 500）。
+        ProxyError::NoGatewayProvider => 404,
 
         // 其他未知错误：500 Internal Server Error
         _ => 500,
