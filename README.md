@@ -18,6 +18,42 @@ English | [中文](README_ZH.md) | [日本語](README_JA.md) | [Deutsch](README_
 
 </div>
 
+## ✨ What's Different in This Fork
+
+Beyond everything upstream offers, this build adds four features focused on
+**getting third-party and reasoning-model providers to actually work** through
+the local proxy:
+
+- **Local Gateway (`/gateway/*`)** — Expose an authenticated set of endpoints so
+  tools that CC Switch does *not* manage can still route through your providers.
+  Each namespace (Claude, Codex, Gemini, Grok Build) picks its own routing mode:
+  **model catalog** (forward only models you list; everything else returns 404)
+  or **route-everything-to-one-provider** (forward any model name verbatim, no
+  catalog, no 404). Requests are gated by a Bearer token you can view, rotate, or
+  set yourself. Like the gateway's whole design, it **never rewrites any CLI live
+  config and never creates takeover backups** — it's purely additive.
+
+- **Force reasoning effort (per provider)** — By default, a request's reasoning
+  `effort` is forwarded upstream only when the model is on a built-in allowlist
+  (o-series / gpt-5+ / grok-4.5); other models like DeepSeek-R1 or Qwen3 have it
+  silently dropped. This switch injects `effort` whenever the request carries it,
+  regardless of model name — for upstreams that accept it but aren't on the list.
+
+- **Hoist system messages to head (per provider)** — Some strict upstreams reject
+  a system message that appears mid-conversation (`"system message must be at the
+  beginning"`). This merges mid-conversation system messages into the head one so
+  those providers accept the request. (Trade-off: if the injected text changes
+  every turn, prefix cache misses — leave it off for cache-friendly upstreams.)
+
+- **In-memory request debug capture** — Flip a switch to keep request bodies,
+  non-streaming response bodies, and error bodies (e.g. HTTP 400) in memory for
+  troubleshooting. **Nothing is written to disk and it clears on restart**;
+  streaming responses record only the HTTP status. A master-detail viewer groups
+  entries per request, filterable by channel (client / upstream / response / error).
+
+> These are the deltas from upstream. Everything below is CC Switch's full
+> feature set.
+
 ## ❤️Sponsor
 
 > [Want to appear here?](mailto:farion1231@gmail.com)
@@ -260,6 +296,13 @@ Modern AI-powered coding relies on tools like Claude Code, Claude Desktop, Codex
 - **Cloud sync** — Custom config directory (Dropbox, OneDrive, iCloud, NAS) and WebDAV server sync
 - **Deep Link** (`ccswitch://`) — Import providers, MCP servers, prompts, and skills via URL
 - Dark / Light / System theme, auto-launch, auto-updater, atomic writes, auto-backups, i18n (zh/zh-TW/en/ja)
+
+### Fork-Specific Features
+
+- **Local Gateway** (`/gateway/*`) — authenticated endpoints for third-party tools CC Switch doesn't manage; per-namespace model-catalog or route-all-to-one-provider mode, viewable/rotatable/customizable token, never rewrites any CLI live config
+- **Force reasoning effort** (per provider) — forwards `effort` upstream for models outside the built-in allowlist (DeepSeek-R1, Qwen3, …)
+- **Hoist system messages to head** (per provider) — for strict upstreams that reject a mid-conversation system message
+- **In-memory request debug capture** — request/response/error bodies kept in memory only, never on disk, cleared on restart; for diagnosing upstream 4xx
 
 ## FAQ
 

@@ -18,6 +18,46 @@
 
 </div>
 
+## ✨ Was ist anders in diesem Fork
+
+Zusätzlich zu allem, was Upstream bietet, fügt dieser Build vier Funktionen hinzu,
+die darauf abzielen, **Drittanbieter- und Reasoning-Modell-Anbieter über den lokalen
+Proxy tatsächlich zum Laufen zu bringen**:
+
+- **Lokales Gateway (`/gateway/*`)** — Stellt einen authentifizierten Satz Endpoints
+  bereit, damit Tools, die CC Switch *nicht* verwaltet, weiterhin über Ihre Anbieter
+  routed werden. Jeder Namespace (Claude, Codex, Gemini, Grok Build) wählt seinen
+  eigenen Routing-Modus: **Modell-Katalog** (leitet nur aufgegeführte Modelle weiter;
+  alles andere liefert 404) oder **alles an einen Anbieter routen** (jeder Modellname
+  wird unverändert durchgereicht, kein Katalog, keine 404). Anfragen werden durch ein
+  Bearer-Token geschützt, das Sie anzeigen, rotieren oder selbst festlegen können. Wie
+  das gesamte Gateway-Design **schreibt es niemals CLI-Live-Konfigurationen um und
+  erzeugt niemals Übernahme-Backups** — es ist rein ergänzend.
+
+- **Reasoning-Aufwand erzwingen (pro Anbieter)** — Standardmäßig wird der Reasoning-
+  `effort` einer Anfrage nur dann stromaufwärts übermittelt, wenn das Modell auf einer
+  eingebauten Allowlist steht (o-Serie / gpt-5+ / grok-4.5); andere Modelle wie
+  DeepSeek-R1 oder Qwen3 werden stillschweigend verworfen. Dieser Schalter injiziert
+  `effort` immer dann, wenn die Anfrage ihn trägt — unabhängig vom Modellnamen, für
+  Upstreams, die das Feld akzeptieren, aber nicht auf der Liste stehen.
+
+- **System-Nachrichten an den Anfang verschieben (pro Anbieter)** — Manche strengen
+  Upstreams lehnen eine System-Nachricht ab, die mitten in der Konversation erscheint
+  (Fehler `"system message must be at the beginning"`). Dies fügt System-Nachrichten aus
+  der Konversation in diejenige am Anfang ein, damit diese Upstreams die Anfrage
+  akzeptieren. (Kompromiss: Ändert sich der injizierte Text jede Runde, verfehlt der
+  Prefix-Cache jede Runde — lassen Sie es bei cache-freundlichen Upstreams aus.)
+
+- **In-Memory-Request-Debug-Erfassung** — Schalten Sie einen Regler um, um
+  Request-Bodies, Nicht-Streaming-Antwort-Bodies und Fehler-Bodies (z. B. HTTP 400) zur
+  Fehlerbehebung im Speicher zu behalten. **Nichts wird auf die Festplatte geschrieben
+  und es wird beim Neustart gelöscht**; Streaming-Antworten erfassen nur den HTTP-Status.
+  Eine Master-Detail-Ansicht gruppiert Einträge pro Anfrage, filterbar nach Kanal
+  (Client / Upstream / Antwort / Fehler).
+
+> Dies sind die Abweichungen von Upstream. Alles unten ist der vollständige
+> Funktionsumfang von CC Switch.
+
 ## ❤️Sponsoren
 
 > [Möchten Sie hier erscheinen?](mailto:farion1231@gmail.com)
@@ -260,6 +300,13 @@ Modernes KI-gestütztes Programmieren stützt sich auf Werkzeuge wie Claude Code
 - **Cloud-Synchronisierung** — Eigenes Konfigurationsverzeichnis (Dropbox, OneDrive, iCloud, NAS) und WebDAV-Server-Synchronisierung
 - **Deep Link** (`ccswitch://`) — Importieren Sie Anbieter, MCP-Server, Prompts und Skills per URL
 - Dunkles / Helles / System-Theme, automatischer Start, automatischer Updater, atomare Schreibvorgänge, automatische Backups, i18n (zh/zh-TW/en/ja)
+
+### Funktionen dieses Forks
+
+- **Lokales Gateway** (`/gateway/*`) — authentifizierte Endpoints für Drittanbieter-Tools, die CC Switch nicht verwaltet; pro Namespace Modell-Katalog- oder Alles-an-einen-Anbieter-Modus, Token anzeigbar/rotierbar/anpassbar, schreibt niemals CLI-Live-Konfigurationen um
+- **Reasoning-Aufwand erzwingen** (pro Anbieter) — überträgt `effort` stromaufwärts auch für Modelle außerhalb der eingebauten Allowlist (DeepSeek-R1, Qwen3, …)
+- **System-Nachrichten an den Anfang verschieben** (pro Anbieter) — für strenge Upstreams, die eine System-Nachricht mitten in der Konversation ablehnen
+- **In-Memory-Request-Debug-Erfassung** — Request-/Antwort-/Fehler-Bodies nur im Speicher, niemals auf der Festplatte, beim Neustart gelöscht; zur Diagnose von Upstream-4xx
 
 ## FAQ
 
