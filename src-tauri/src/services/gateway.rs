@@ -695,7 +695,7 @@ mod tests {
         let mode = get_gateway_mode(&db, &AppType::Claude).unwrap();
         assert_eq!(mode, GatewayMode::Provider);
         let provider = get_gateway_default_provider(&db, &AppType::Claude).unwrap();
-        assert_eq!(provider.id, "p1");
+        assert_eq!(provider.unwrap().id, "p1");
     }
 
     #[test]
