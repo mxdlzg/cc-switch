@@ -9,7 +9,7 @@
 //!     路由到该 model 指定的 provider，未命中直接 404（空目录 = 全部 404）；
 //!   - **provider 模式**：整条 namespace 流量透传给一个默认供应商，不查目录、不 404，
 //!     模型名原样送达上游。
-//!   切模式不会销毁另一模式的配置（目录在 provider 模式下只是不被读取）。
+//!     切模式不会销毁另一模式的配置（目录在 provider 模式下只是不被读取）。
 //! - 访问必须携带 `Authorization: Bearer <token>`（常数时间比较）。
 //!
 //! 网关请求使用 provider **自身**的 `app_type` 作为 `app_type_str`（而非 "gateway"）：
