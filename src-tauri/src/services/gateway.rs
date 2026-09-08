@@ -321,10 +321,12 @@ pub fn resolve_gateway_provider(
 
 /// 读取某个 namespace 的路由模式。缺省（键不存在 / 空值）为 [`GatewayMode::Model`]。
 pub fn get_gateway_mode(db: &Database, namespace: &AppType) -> Result<GatewayMode, AppError> {
-    Ok(match db.get_setting(&mode_setting_key(namespace.as_str()))? {
-        Some(raw) => GatewayMode::parse(&raw),
-        None => GatewayMode::Model,
-    })
+    Ok(
+        match db.get_setting(&mode_setting_key(namespace.as_str()))? {
+            Some(raw) => GatewayMode::parse(&raw),
+            None => GatewayMode::Model,
+        },
+    )
 }
 
 /// 读取 provider 模式下该 namespace 的默认供应商。
@@ -361,7 +363,10 @@ pub fn set_gateway_namespace_mode(
 
     match mode {
         GatewayMode::Model => {
-            db.set_setting(&mode_setting_key(namespace.as_str()), GatewayMode::Model.as_str())?;
+            db.set_setting(
+                &mode_setting_key(namespace.as_str()),
+                GatewayMode::Model.as_str(),
+            )?;
             // 清掉默认供应商（写空串 = 未配置，见 get_gateway_default_provider）。
             db.set_setting(&key, "")
         }
@@ -382,7 +387,10 @@ pub fn set_gateway_namespace_mode(
                 ));
             }
             db.set_setting(&key, id)?;
-            db.set_setting(&mode_setting_key(namespace.as_str()), GatewayMode::Provider.as_str())
+            db.set_setting(
+                &mode_setting_key(namespace.as_str()),
+                GatewayMode::Provider.as_str(),
+            )
         }
     }
 }
@@ -416,7 +424,9 @@ pub fn prepare_upstream_models(
         .ok_or_else(|| "供应商不存在或不属于该命名空间".to_string())?;
 
     let adapter = get_adapter(namespace).ok_or_else(|| "该命名空间无适配器".to_string())?;
-    let base_url = adapter.extract_base_url(&provider).map_err(|e| e.to_string())?;
+    let base_url = adapter
+        .extract_base_url(&provider)
+        .map_err(|e| e.to_string())?;
     let auth = adapter
         .extract_auth(&provider)
         .ok_or_else(|| "供应商未配置可用的密钥".to_string())?;
@@ -649,7 +659,8 @@ mod tests {
     fn seed_provider(db: &Database, app_type: &str, id: &str) {
         let provider =
             Provider::with_id(id.to_string(), id.to_string(), serde_json::json!({}), None);
-        db.save_provider(app_type, &provider).expect("seed provider");
+        db.save_provider(app_type, &provider)
+            .expect("seed provider");
     }
 
     #[test]

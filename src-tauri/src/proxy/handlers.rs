@@ -227,11 +227,9 @@ async fn gateway_catalog_models(
         .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
 
     if matches!(mode, crate::services::gateway::GatewayMode::Provider) {
-        let provider = crate::services::gateway::get_gateway_default_provider(
-            state.db.as_ref(),
-            &namespace,
-        )
-        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+        let provider =
+            crate::services::gateway::get_gateway_default_provider(state.db.as_ref(), &namespace)
+                .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
         // provider 被删（None）→ 没得上游可问，空列表（与「目录空 = 空列表」对称）。
         let Some(provider) = provider else {
             return Ok(Vec::new());
@@ -245,7 +243,10 @@ async fn gateway_catalog_models(
         ) {
             Ok(req) => req,
             Err(e) => {
-                log::warn!("[Gateway] {} provider 模式无法拉取模型列表: {e}", namespace.as_str());
+                log::warn!(
+                    "[Gateway] {} provider 模式无法拉取模型列表: {e}",
+                    namespace.as_str()
+                );
                 return Ok(Vec::new());
             }
         };
