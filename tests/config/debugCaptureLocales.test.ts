@@ -13,6 +13,8 @@ import zh from "@/i18n/locales/zh.json";
 const requiredKeys = [
   "settings.advanced.debugCapture.turnLegend",
   "settings.advanced.debugCapture.attemptNote",
+  // count 现在带两个插值（条数 + 轮数）；某语言漏掉 {{turns}} 会显示成裸占位符
+  "settings.advanced.debugCapture.count",
   // 行首/标签页要显示这些 kind 标签，缺一个就显示 key 路径
   "settings.advanced.debugCapture.kind.client_request",
   "settings.advanced.debugCapture.kind.request",

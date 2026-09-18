@@ -456,7 +456,7 @@
         "clear": "清空",
         "empty": "暫無擷取（開啟開關後發起請求即可）",
         "emptyToggle": "開啟後新請求將記錄在下方",
-        "count": "已擷取 {{n}} 條（最多保留 50 條）",
+        "count": "已擷取 {{n}} 條 / {{turns}} 輪（條目最多保留 50 條）",
         "rawUpstream": "上游原文",
         "converted": "轉換後回應",
         "truncated": "已截斷",

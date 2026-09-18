@@ -264,6 +264,13 @@ export function DebugCaptureSection() {
   // 正序配对（步骤才是 客户端→上游→响应），再整体倒序（最新请求在最上）。
   const turns = useMemo(() => buildTurns(visible).reverse(), [visible]);
 
+  // 面板上的计数用**未筛选**的全量：条数是捕获条目数（一轮常占 3 条），轮数才是
+  // 用户认识的「问答次数」——只报条数正是他数不出几轮的原因。
+  const allTurnCount = useMemo(
+    () => buildTurns(chronological).length,
+    [chronological],
+  );
+
   // 选中项可能因清空/滚动而消失，回退到最新一条（同样避免渲染期 setState）。
   const selected =
     turns.find((turn) => turn.turnId === selectedTurnId) ?? turns[0] ?? null;
@@ -583,7 +590,8 @@ export function DebugCaptureSection() {
         <span className="text-xs text-muted-foreground">
           {t("settings.advanced.debugCapture.count", {
             n: chronological.length,
-            defaultValue: `已捕获 ${chronological.length} 条（最多保留 50 条）`,
+            turns: allTurnCount,
+            defaultValue: `已捕获 ${chronological.length} 条 / ${allTurnCount} 轮（条目最多保留 50 条）`,
           })}
         </span>
         <div className="ml-auto flex items-center gap-2">

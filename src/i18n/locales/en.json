@@ -456,7 +456,7 @@
         "clear": "Clear",
         "empty": "No captures yet (turn the switch on, then send a request)",
         "emptyToggle": "New requests will be recorded below once enabled",
-        "count": "{{n}} captured (up to 50 kept)",
+        "count": "{{n}} captured / {{turns}} request(s) (up to 50 entries kept)",
         "rawUpstream": "raw upstream",
         "converted": "converted response",
         "truncated": "truncated",

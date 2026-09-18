@@ -456,7 +456,7 @@
         "clear": "清空",
         "empty": "暂无捕获（开启开关后发起请求即可）",
         "emptyToggle": "开启后新请求将记录在下方",
-        "count": "已捕获 {{n}} 条（最多保留 50 条）",
+        "count": "已捕获 {{n}} 条 / {{turns}} 轮（条目最多保留 50 条）",
         "rawUpstream": "上游原文",
         "converted": "转换后响应",
         "truncated": "已截断",
