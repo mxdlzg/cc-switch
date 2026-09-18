@@ -1132,6 +1132,11 @@ pub fn run() {
                 app_state.db.clone(),
                 app.handle().clone(),
             );
+            // 渠道静默监控：自带 60s 定时器，配置关闭时读到 enabled=false 立刻返回
+            crate::services::idle_watch::start_worker(
+                app_state.db.clone(),
+                app.handle().clone(),
+            );
             // 将同一个实例注入到全局状态，避免重复创建导致的不一致
             app.manage(app_state);
 
@@ -1425,6 +1430,9 @@ pub fn run() {
             commands::start_replay,
             commands::stop_replay,
             commands::get_replay_status,
+            commands::get_idle_watch_config,
+            commands::save_idle_watch_config,
+            commands::get_channel_idle_status,
             commands::restart_app,
             commands::install_update_and_restart,
             commands::check_app_update_available,

@@ -7,6 +7,7 @@ import {
   ShieldAlert,
   KeyRound,
   History,
+  AlarmClock,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
@@ -24,6 +25,7 @@ import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPa
 import { FailoverQueueManager } from "@/components/proxy/FailoverQueueManager";
 import { RectifierConfigPanel } from "@/components/settings/RectifierConfigPanel";
 import { ReplayPanel } from "@/components/settings/ReplayPanel";
+import { IdleWatchPanel } from "@/components/settings/IdleWatchPanel";
 import { GlobalProxySettings } from "@/components/settings/GlobalProxySettings";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ToggleRow } from "@/components/ui/toggle-row";
@@ -298,6 +300,29 @@ export function ProxyTabContent({
           </AccordionTrigger>
           <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
             <ReplayPanel />
+          </AccordionContent>
+        </AccordionItem>
+
+        {/* Idle Watch */}
+        <AccordionItem
+          value="idleWatch"
+          className="rounded-xl glass-card overflow-hidden"
+        >
+          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+            <div className="flex items-center gap-3">
+              <AlarmClock className="h-5 w-5 text-orange-500" />
+              <div className="text-left">
+                <h3 className="text-base font-semibold">
+                  {t("idleWatch.title")}
+                </h3>
+                <p className="text-sm text-muted-foreground font-normal">
+                  {t("idleWatch.description")}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
+            <IdleWatchPanel />
           </AccordionContent>
         </AccordionItem>
 

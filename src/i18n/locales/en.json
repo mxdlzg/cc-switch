@@ -3070,6 +3070,53 @@
       "maxDurationMinutes": "Hard stop after this long, whatever happened (1-1440)"
     }
   },
+  "idleWatch": {
+    "title": "Idle channel alerts",
+    "description": "Get notified when a channel has gone too long without a successful request; optionally poke it with a keep-alive",
+    "proxiedOnlyHint": "Per-channel attribution only exists for traffic that goes through the local proxy. When a CLI talks to a provider directly, its usage is scraped from session files and has no channel, so a channel that never gets proxied will keep showing \"no requests\" and alert on its baseline.",
+    "enabled": "Idle channel alerts",
+    "enabledHint": "Off only pauses the checks - your rules are kept.",
+    "keepalive": "Automatic keep-alive",
+    "keepaliveHint": "When an alert fires, also send one authenticated GET /models. It is real authenticated traffic but is not billed and not written to request logs - so it does NOT reset the idle timer; alerts keep coming at each threshold.",
+    "rules": "Rules",
+    "noRules": "No rules yet",
+    "add": "Add",
+    "delete": "Delete",
+    "threshold": "Threshold (minutes)",
+    "thresholdRange": "Threshold must be between {{min}} and {{max}} minutes",
+    "modeHint": "Always = one more alert for every additional threshold of silence. One-shot = the rule deletes itself after it fires, until you set it again.",
+    "pickProvider": "Pick a provider",
+    "loadingProviders": "Loading providers...",
+    "duplicate": "This channel already has a rule - edit it instead",
+    "statusTitle": "Last successful request per channel",
+    "noRows": "No channel-attributable requests in the logs yet (that is what you get while takeover/gateway is off).",
+    "never": "Never",
+    "allFailed": "All failed",
+    "appMustRunHint": "Checks only run while the app is open - nothing is measured or announced while it is closed.",
+    "alertBody": "no successful request for {{idle}}",
+    "onceDone": "one-shot alert done",
+    "mode": {
+      "always": "Always",
+      "once": "One-shot"
+    },
+    "keepaliveResult": {
+      "ok": "keep-alive OK",
+      "unsupported": "keep-alive unavailable (dynamic token)",
+      "failed": "keep-alive failed: {{error}}"
+    },
+    "duration": {
+      "minutes": "{{minutes}} min",
+      "hours": "{{hours}} h",
+      "days": "{{days}} d"
+    },
+    "col": {
+      "channel": "Channel",
+      "success": "OK/total",
+      "last": "Last success",
+      "idle": "Idle for",
+      "rule": "Rule"
+    }
+  },
   "gateway": {
     "enable": {
       "title": "Enable Local Gateway",

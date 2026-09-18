@@ -3071,6 +3071,53 @@
       "maxDurationMinutes": "無論結果如何，超過這個時長就停（1-1440）"
     }
   },
+  "idleWatch": {
+    "title": "渠道靜默提醒",
+    "description": "某渠道太久沒有成功請求時提醒你，可選順手自動保活",
+    "proxiedOnlyHint": "按渠道歸屬只在接管/閘道下成立：CLI 直連供應商時用量是掃會話檔案得來的，沒有渠道歸屬。所以一個從不走代理的渠道會一直顯示「從未會有成功請求」，並依規則建立時刻提醒。",
+    "enabled": "渠道靜默提醒",
+    "enabledHint": "關閉只是停止檢查，已設的規則會保留。",
+    "keepalive": "自動保活",
+    "keepaliveHint": "提醒觸發時順帶發一次帶認證的 GET /models。它是真實認證流量，但不計費、不寫請求日誌——因此不會重設計時，提醒仍會按閾值繼續來。",
+    "rules": "規則",
+    "noRules": "還沒有規則",
+    "add": "新增",
+    "delete": "刪除",
+    "threshold": "閾值（分鐘）",
+    "thresholdRange": "閾值需在 {{min}}~{{max}} 分鐘之間",
+    "modeHint": "常開＝每再靜默一個閾值提醒一次；一次性＝提醒一次後規則自動刪除，直到你重新設。",
+    "pickProvider": "請選擇供應商",
+    "loadingProviders": "載入供應商…",
+    "duplicate": "該渠道已有規則，請直接修改它",
+    "statusTitle": "各渠道最近成功請求",
+    "noRows": "日誌裡還沒有能歸屬到渠道的請求（未開啟接管/閘道時就是這樣）。",
+    "never": "從未",
+    "allFailed": "全部失敗",
+    "appMustRunHint": "只在應用程式執行期間檢查；關閉應用不計時也不會提醒。",
+    "alertBody": "已 {{idle}} 沒有成功請求",
+    "onceDone": "一次性提醒已結束",
+    "mode": {
+      "always": "常開",
+      "once": "一次性"
+    },
+    "keepaliveResult": {
+      "ok": "已自動保活成功",
+      "unsupported": "該渠道無法自動保活（需動態 token）",
+      "failed": "自動保活失敗：{{error}}"
+    },
+    "duration": {
+      "minutes": "{{minutes}} 分鐘",
+      "hours": "{{hours}} 小時",
+      "days": "{{days}} 天"
+    },
+    "col": {
+      "channel": "渠道",
+      "success": "成功/總數",
+      "last": "最近成功",
+      "idle": "已靜默",
+      "rule": "規則"
+    }
+  },
   "gateway": {
     "enable": {
       "title": "啟用本機閘道",
