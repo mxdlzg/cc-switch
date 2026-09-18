@@ -472,7 +472,8 @@
           "client_request": "Client",
           "request": "Upstream",
           "response": "Response",
-          "error": "Error"
+          "error": "Error",
+          "replay_response": "Replay"
         }
       }
     },
@@ -3019,6 +3020,55 @@
     "maxRetries": "Max Retries",
     "degradedThreshold": "Slow-response threshold (ms)",
     "error": "{{providerName}} check error: {{error}}"
+  },
+  "replay": {
+    "title": "Request Replay",
+    "description": "Re-send a captured request on a schedule until a seat opens up, then get a system notification",
+    "tip": "Replay this request",
+    "idleHint": "No replay task. Open \"View captures\" under Settings → Advanced, pick a request whose Upstream step is present, then hit the replay button on its right — useful when a provider caps concurrent seats and returns 500 to everyone else.",
+    "dialogTitle": "Replay settings",
+    "start": "Start replay",
+    "stop": "Stop",
+    "freezeWarning": "Replay re-sends the exact bytes captured at that moment — URL, headers and API key included. It does NOT follow the current provider or the takeover switch: you can keep using another provider normally while this keeps knocking on the original door. Cost: rotate the key in the meantime and replay gets 401 and stops at once.",
+    "noBilling": "Replays bypass the forwarding pipeline: they are not written to request logs and are not counted in usage stats. A streaming request is replayed too — its SSE chunks are aggregated and stored as a separate capture entry.",
+    "noSnapshot": "This request has no replay snapshot — it was captured before this feature shipped, or its body exceeded the size cap.",
+    "fromReplay": "replay response (not sent to the client)",
+    "attempts": "attempt {{attempts}} · consecutive successes {{consecutive}}/{{required}}",
+    "snapshotMeta": "body {{body}} KB · {{headers}} headers · model={{model}}",
+    "validationFailed": "Out of range: {{fields}}",
+    "invalidStatusCode": "Invalid retry status code: {{value}} (needs 100-599)",
+    "state": {
+      "running": "Replaying",
+      "succeeded": "Got a seat",
+      "failed": "Stopped (non-retryable)",
+      "capped": "Stopped (cap reached)",
+      "stopped": "Stopped"
+    },
+    "mode": {
+      "fixed": "Fixed interval",
+      "backoff": "Exponential backoff"
+    },
+    "fields": {
+      "mode": "Pace",
+      "intervalSecs": "Interval (seconds)",
+      "backoffStartSecs": "Backoff start (seconds)",
+      "backoffMultPercent": "Backoff multiplier (%)",
+      "backoffCapSecs": "Backoff ceiling (seconds)",
+      "requiredConsecutive": "Consecutive successes",
+      "retryableStatuses": "Retryable status codes",
+      "maxAttempts": "Max attempts",
+      "maxDurationMinutes": "Max duration (minutes)"
+    },
+    "hints": {
+      "intervalSecs": "Wait this long between attempts (1-3600)",
+      "backoffStartSecs": "First wait, then it grows (1-3600)",
+      "backoffMultPercent": "200 = double each time (100-1000)",
+      "backoffCapSecs": "The wait never grows past this (1-3600)",
+      "requiredConsecutive": "Stop as succeeded after this many successes in a row (1-10). 1 = stop on the first 2xx",
+      "retryableStatuses": "Comma separated. Only these codes are retried; anything else (401/403/400…) stops immediately. Network errors and timeouts always retry. Default: 500",
+      "maxAttempts": "Stop and notify once this many attempts are used up (1-100000)",
+      "maxDurationMinutes": "Hard stop after this long, whatever happened (1-1440)"
+    }
   },
   "gateway": {
     "enable": {

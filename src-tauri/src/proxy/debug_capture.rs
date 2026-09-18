@@ -16,8 +16,12 @@
 //!
 //! 关联：没有贯穿请求/响应的 request_id（DB 里的 `request_id` 是响应回来后才由
 //! `message_id` 派生的），故各条只带 `session_id`，前端按会话 + 时间线人工配对。
+//!
+//! 重放快照：查看器里的条目只有 body 文本，缺 method / URL / 头，无法独立重发。
+//! 发送前那一刻四元组才齐备，故另存一张 [`RequestSnapshot`] 旁路表（按请求条目的
+//! `seq` 关联），供重放器原样重发。头里含鉴权，**只有元信息会经命令离开后端**。
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -32,6 +36,11 @@ const QUEUE_CAPACITY: usize = 256;
 
 /// 单个 body 的字符上限。超出截断并附标记，防止一次超大响应撑爆内存。
 const MAX_BODY_CHARS: usize = 200_000;
+
+/// 单个重放快照 body 的字节硬顶。超出则**不存快照**（该条目不可重放），
+/// 避免一次几十 MB 的多模态请求把内存吃穿——查看器里的截断文本无法重放，
+/// 快照又必须是完整字节，二者不可兼得，只能放弃这一条。
+const MAX_SNAPSHOT_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// 开关。`false` 时 `record_*` 首行即返回，消费者任务也不会被拉起。
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -48,6 +57,13 @@ static BUFFER: OnceLock<Mutex<VecDeque<CaptureEvent>>> = OnceLock::new();
 /// 单调递增序号，供前端排序 / 去重（同一毫秒内多请求也能定序）。
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// 重放快照旁路表：`seq`（`request` 条目的序号）→ 完整四元组。
+///
+/// **刻意不进 [`CaptureEvent`]**：前端每秒整表轮询 `snapshot()`，把头集合与 body
+/// 字节塞进去等于每秒搬运一份密钥 + 大 body。这张表只在用户显式点「重放」时
+/// 按 seq 单条取用。容量与环形缓冲同步（见 [`buffer_push`] 的联动剪枝 + 硬顶）。
+static SNAPSHOTS: OnceLock<Mutex<BTreeMap<u64, RequestSnapshot>>> = OnceLock::new();
+
 /// 捕获类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +76,31 @@ pub enum CaptureKind {
     Response,
     /// 上游非 2xx 错误体（400/401/429/5xx 的响应体原文）
     Error,
+    /// 重放器成功（或终态）时拿到的响应体——客户端从未收到它，故存进查看器供回看
+    ReplayResponse,
+}
+
+/// 一次出站请求的**完整四元组**快照，重放器据此原样重发。
+///
+/// 语义是「冻结」：存的是发送那一刻的 method / 最终 URL / 最终头集合（**含鉴权**）/
+/// body 字节。重放不回读 provider 表、不跟随接管开关，因此用户可以一边重打被限流的
+/// 供应商、一边切到别的供应商正常使用。代价：期间轮换密钥会让重放持续 401。
+#[derive(Debug, Clone)]
+pub struct RequestSnapshot {
+    /// HTTP 方法（大写，如 `POST`）
+    pub method: String,
+    /// 最终上游 URL（含 query，已含 base_url 拼接结果）
+    pub url: String,
+    /// 最终发往上游的头集合，含鉴权头。保留原始顺序。
+    pub headers: Vec<(String, String)>,
+    /// 原始 body 字节（不 pretty、不截断；超过硬顶则整条快照不入库）
+    pub body: Vec<u8>,
+    /// 以下四项只为给重放响应打标签（写回查看器时与请求条目同属一路），
+    /// 不参与重放本身。
+    pub session_id: String,
+    pub app_type: String,
+    pub provider_id: String,
+    pub model: String,
 }
 
 /// 一条捕获记录。
@@ -98,17 +139,40 @@ fn buffer() -> &'static Mutex<VecDeque<CaptureEvent>> {
     BUFFER.get_or_init(|| Mutex::new(VecDeque::with_capacity(CAPTURE_CAP)))
 }
 
-/// 写入环形缓冲（满则挤旧）。消费者任务与「无运行时直写」兜底共用。
+fn snapshots() -> &'static Mutex<BTreeMap<u64, RequestSnapshot>> {
+    SNAPSHOTS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// 写入环形缓冲（满则挤旧），并**联动**丢弃被挤掉那条的重放快照。
+///
+/// 剪枝只针对被挤出的 seq：不能按「缓冲里还剩哪些 seq」全表对账，因为快照是在
+/// 发送前写的、而对应事件可能还在队列里没落进缓冲（对账会误杀在途快照）。
 fn buffer_push(event: CaptureEvent) {
-    let buf = buffer();
-    let mut guard = match buf.lock() {
+    let evicted: Vec<u64> = {
+        let buf = buffer();
+        let mut guard = match buf.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let mut gone = Vec::new();
+        if guard.len() >= CAPTURE_CAP {
+            if let Some(old) = guard.pop_front() {
+                gone.push(old.seq);
+            }
+        }
+        guard.push_back(event);
+        gone
+    };
+    if evicted.is_empty() {
+        return;
+    }
+    let mut snaps = match snapshots().lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if guard.len() >= CAPTURE_CAP {
-        guard.pop_front();
+    for seq in evicted {
+        snaps.remove(&seq);
     }
-    guard.push_back(event);
 }
 
 /// 首次捕获时惰性拉起消费者任务。
@@ -159,15 +223,60 @@ pub fn snapshot() -> Vec<CaptureEvent> {
     guard.iter().cloned().collect()
 }
 
-/// 清空缓冲（返回被清空条数）。
+/// 清空缓冲（返回被清空条数）。快照旁路表一并清空（含密钥，不留）。
 pub fn clear() -> usize {
-    let mut guard = match buffer().lock() {
+    let n = {
+        let mut guard = match buffer().lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let n = guard.len();
+        guard.clear();
+        n
+    };
+    if let Ok(mut snaps) = snapshots().lock() {
+        snaps.clear();
+    }
+    n
+}
+
+/// 记录一次出站请求的重放快照，键为对应 `request` 条目的 `seq`。
+///
+/// `request_seq=None`（抓取关闭 → `record_request` 没入库）时直接返回，避免留下
+/// 查看器里看不到的孤儿快照。body 超过 [`MAX_SNAPSHOT_BODY_BYTES`] 时不存：
+/// 前端会因取不到快照而禁用重放按钮并说明原因。
+pub fn record_snapshot(request_seq: Option<u64>, snapshot: RequestSnapshot) {
+    let Some(seq) = request_seq else { return };
+    if !is_enabled() {
+        return;
+    }
+    if snapshot.body.len() > MAX_SNAPSHOT_BODY_BYTES {
+        log::debug!(
+            "[DebugCapture] 跳过重放快照: body={}B 超过上限 {}B",
+            snapshot.body.len(),
+            MAX_SNAPSHOT_BODY_BYTES
+        );
+        return;
+    }
+    let mut guard = match snapshots().lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
-    let n = guard.len();
-    guard.clear();
-    n
+    // 队列饱和时事件可能被丢弃、快照却留下了 → 用硬顶兜住内存，按 seq 挤最旧。
+    while guard.len() >= CAPTURE_CAP {
+        let Some((&oldest, _)) = guard.iter().next() else { break };
+        guard.remove(&oldest);
+    }
+    guard.insert(seq, snapshot);
+}
+
+/// 按 seq 取回快照（深拷贝，锁内不做事后处理）。取不到即「该条目不可重放」。
+pub fn get_snapshot(request_seq: u64) -> Option<RequestSnapshot> {
+    let guard = match snapshots().lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.get(&request_seq).cloned()
 }
 
 /// 截断到 [`MAX_BODY_CHARS`]，返回 (文本, 是否截断)。
@@ -182,10 +291,13 @@ fn truncate(text: String) -> (String, bool) {
     )
 }
 
-/// 投递一条捕获。**未开启时首行返回**，不做任何序列化。
+/// 投递一条捕获。**未开启时首行返回 None**，不做任何序列化。
 ///
 /// `body` 已是最终字符串（美化 JSON 或原文）；调用方负责生成，
 /// 以免在未开启时无谓序列化。
+///
+/// 返回值：入库成功的条目序号，供调用方关联旁路数据（重放快照）；关闭或队列饱和
+/// 丢弃时返回 None——此时查看器里看不到这条，旁路数据也就不必存在。
 #[allow(clippy::too_many_arguments)]
 fn push(
     kind: CaptureKind,
@@ -196,14 +308,15 @@ fn push(
     status: Option<u16>,
     raw_upstream: bool,
     body: String,
-) {
+) -> Option<u64> {
     // 快速路径：关闭时零成本返回。
     if !is_enabled() {
-        return;
+        return None;
     }
     let (body, truncated) = truncate(body);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let event = CaptureEvent {
-        seq: SEQ.fetch_add(1, Ordering::Relaxed),
+        seq,
         at_ms: now_ms(),
         kind,
         session_id: session_id.to_string(),
@@ -219,14 +332,17 @@ fn push(
     // 消费者就绪 → try_send：队列满时直接丢本次捕获，绝不阻塞转发主流程。
     // 无 tokio 运行时（如单元测试）→ 直写缓冲，保持语义一致。
     if ensure_consumer() {
-        let Some(tx) = TX.get() else { return };
+        let Some(tx) = TX.get() else { return None };
         if let Err(e) = tx.try_send(event) {
             log::debug!("[DebugCapture] 丢弃一条捕获（队列饱和）: {e}");
+            return None;
         }
     } else {
         buffer_push(event);
     }
+    Some(seq)
 }
+
 
 /// 美化一个 JSON body；无法美化时退回原始字符串表示。
 fn pretty_json(value: &serde_json::Value) -> String {
@@ -245,7 +361,7 @@ pub fn record_client_request(
     if !is_enabled() {
         return;
     }
-    push(
+    let _ = push(
         CaptureKind::ClientRequest,
         session_id,
         app_type,
@@ -258,15 +374,17 @@ pub fn record_client_request(
 }
 
 /// 捕获出站请求体。`filtered_body` 为发往上游的最终 JSON。
+///
+/// 返回入库的 `seq`——调用方（forwarder）拿它当关联键写重放快照。关闭态返回 None。
 pub fn record_request(
     session_id: &str,
     app_type: &str,
     provider_id: &str,
     model: &str,
     filtered_body: &serde_json::Value,
-) {
+) -> Option<u64> {
     if !is_enabled() {
-        return;
+        return None;
     }
     push(
         CaptureKind::Request,
@@ -277,7 +395,7 @@ pub fn record_request(
         None,
         false,
         pretty_json(filtered_body),
-    );
+    )
 }
 
 /// 捕获上游 2xx 非流式响应体。`bytes` 为解压后的原始响应字节。
@@ -300,7 +418,7 @@ pub fn record_response(
         Ok(value) => pretty_json(&value),
         Err(_) => String::from_utf8_lossy(bytes).into_owned(),
     };
-    push(
+    let _ = push(
         CaptureKind::Response,
         session_id,
         app_type,
@@ -329,7 +447,7 @@ pub fn record_error(
         Ok(value) => pretty_json(&value),
         Err(_) => raw.to_string(),
     };
-    push(
+    let _ = push(
         CaptureKind::Error,
         session_id,
         app_type,
@@ -339,6 +457,45 @@ pub fn record_error(
         false,
         body,
     );
+}
+
+/// 捕获重放器拿到的响应体。重放的响应**客户端从未收到**（没有人在等它），
+/// 所以存进查看器供回看——用户人不在电脑前，成功后要能点开看内容。
+///
+/// **不受 `ENABLED` 管辖**（本模块唯一例外）：这不是转发管线的捕获点，而是重放功能
+/// 自己的产物，用户点名要它落到这个查看器里。抓取开关关掉只保留既有缓冲（既有设计），
+/// 此时重放产物照进——否则成功通知会说「见查看器」而查看器里什么都没有。
+/// 容量仍由同一个 [`CAPTURE_CAP`] 环形缓冲兜住。
+///
+/// 与接管/网关无关：重放器直接打快照里的 URL，不经过 forwarder，因此这一条
+/// 不进 `proxy_request_logs`、不计费、不搅仪表盘。
+pub fn record_replay_response(
+    session_id: &str,
+    app_type: &str,
+    provider_id: &str,
+    model: &str,
+    status: u16,
+    bytes: &[u8],
+) {
+    let body = match serde_json::from_slice::<serde_json::Value>(bytes) {
+        Ok(value) => pretty_json(&value),
+        Err(_) => String::from_utf8_lossy(bytes).into_owned(),
+    };
+    // 直接走 buffer_push：`push` 的首行就是 is_enabled 短路，这里要绕开它。
+    let (body, truncated) = truncate(body);
+    buffer_push(CaptureEvent {
+        seq: SEQ.fetch_add(1, Ordering::Relaxed),
+        at_ms: now_ms(),
+        kind: CaptureKind::ReplayResponse,
+        session_id: session_id.to_string(),
+        app_type: app_type.to_string(),
+        provider_id: provider_id.to_string(),
+        model: model.to_string(),
+        status: Some(status),
+        raw_upstream: true,
+        body,
+        truncated,
+    });
 }
 
 #[cfg(test)]
@@ -429,6 +586,104 @@ mod tests {
             let snap = snapshot();
             assert_eq!(snap.len(), CAPTURE_CAP);
             assert_eq!(snap.first().unwrap().seq, 5, "最旧的 5 条应被挤掉");
+        });
+    }
+
+    fn snap(body: &[u8]) -> RequestSnapshot {
+        RequestSnapshot {
+            method: "POST".into(),
+            url: "https://upstream.test/v1/messages?x=1".into(),
+            headers: vec![
+                ("authorization".into(), "Bearer sk-frozen".into()),
+                ("content-type".into(), "application/json".into()),
+            ],
+            body: body.to_vec(),
+            session_id: "s".into(),
+            app_type: "claude".into(),
+            provider_id: "prov".into(),
+            model: "m".into(),
+        }
+    }
+
+    #[test]
+    fn snapshot_roundtrip_and_none_when_disabled() {
+        with_isolated_buffer(|| {
+            set_enabled(false);
+            assert_eq!(
+                record_request("s", "claude", "p", "m", &json!({"a": 1})),
+                None,
+                "关闭态 record_request 不应返回 seq"
+            );
+            record_snapshot(Some(999), snap(b"{\"a\":1}"));
+            assert!(get_snapshot(999).is_none(), "关闭态不应存快照");
+
+            set_enabled(true);
+            let seq = record_request("s1", "claude", "prov", "m", &json!({ "a": 1 }))
+                .expect("开启态应返回 seq");
+            record_snapshot(Some(seq), snap(br#"{"a":1}"#));
+            let got = get_snapshot(seq).expect("应能按 seq 取回快照");
+            assert_eq!(got.method, "POST");
+            assert!(got.url.contains("v1/messages"));
+            assert_eq!(got.headers[0].1, "Bearer sk-frozen", "鉴权头必须原样保留");
+            assert_eq!(got.body, br#"{"a":1}"#.to_vec());
+
+            // None 键（事件被丢弃）→ 不留孤儿快照
+            record_snapshot(None, snap(b"{}"));
+
+            clear();
+            assert!(get_snapshot(seq).is_none(), "clear 应一并清掉含密钥的快照");
+        });
+    }
+
+    #[test]
+    fn snapshot_evicted_with_buffer_and_capped() {
+        with_isolated_buffer(|| {
+            set_enabled(true);
+            let first = record_request("s", "claude", "p", "m", &json!({"n": 0}))
+                .expect("开启态应返回 seq");
+            record_snapshot(Some(first), snap(b"{}"));
+            assert!(get_snapshot(first).is_some());
+
+            // 挤爆环形缓冲 → 被挤掉那条的快照必须一起走，否则表会无界增长
+            for i in 0..(CAPTURE_CAP + 1) {
+                record_request("s", "claude", "p", "m", &json!({"n": i}));
+            }
+            assert_eq!(snapshot().len(), CAPTURE_CAP);
+            assert!(get_snapshot(first).is_none(), "被挤出缓冲的条目其快照应联动删除");
+        });
+    }
+
+    #[test]
+    fn oversized_body_skips_snapshot() {
+        with_isolated_buffer(|| {
+            set_enabled(true);
+            let seq = record_request("s", "claude", "p", "m", &json!({"a": 1})).unwrap();
+            let huge = vec![0u8; MAX_SNAPSHOT_BODY_BYTES + 1];
+            record_snapshot(Some(seq), snap(&huge));
+            assert!(
+                get_snapshot(seq).is_none(),
+                "超过硬顶的 body 不存快照（前端会禁用重放而非重发半截内容）"
+            );
+        });
+    }
+
+    #[test]
+    fn replay_response_survives_disabled_capture() {
+        with_isolated_buffer(|| {
+            // 用户可以先关抓取（缓冲保留可回看）再重放；成功通知写着「见查看器」，
+            // 所以重放响应必须真能进去 —— 这是本模块唯一不受 ENABLED 管辖的写入。
+            set_enabled(false);
+            record_request("s", "claude", "p", "m", &json!({"a": 1}));
+            assert!(snapshot().is_empty(), "普通捕获仍受开关管辖");
+
+            record_replay_response("s9", "codex", "prov", "gpt-x", 200, br#"{"ok":true}"#);
+            let snap = snapshot();
+            let ev = snap
+                .iter()
+                .find(|e| e.kind == CaptureKind::ReplayResponse)
+                .expect("关闭态也应收下重放响应");
+            assert_eq!(ev.status, Some(200));
+            assert!(ev.body.contains("\"ok\""), "JSON 应被美化");
         });
     }
 }

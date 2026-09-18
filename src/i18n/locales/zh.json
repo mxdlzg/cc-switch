@@ -472,7 +472,8 @@
           "client_request": "客户端",
           "request": "上游",
           "response": "响应",
-          "error": "错误"
+          "error": "错误",
+          "replay_response": "重放"
         }
       }
     },
@@ -3019,6 +3020,55 @@
     "maxRetries": "最大重试次数",
     "degradedThreshold": "较慢阈值（毫秒）",
     "error": "{{providerName}} 检查出错: {{error}}"
+  },
+  "replay": {
+    "title": "请求重放",
+    "description": "按设定频率自动重发抓到的请求，抢到席位后停止并弹系统通知",
+    "tip": "重放这条请求",
+    "idleHint": "当前没有重放任务。到「设置 → 高级 → 请求调试捕获」打开查看器，选中一条含「上送」步骤的请求，点它右侧重放按钮。适用于供应商限制并发席位、其他人一律拿到 500 的情况。",
+    "dialogTitle": "重放设置",
+    "start": "开始重放",
+    "stop": "停止",
+    "freezeWarning": "重放发的是抓取那一刻定格的原始字节，包含 URL、请求头与 API Key。它不回读当前供应商、不跟随接管开关：你可以一边让它继续敲原来的门，一边切到别的供应商正常用。代价是期间轮换密钥会让重放持续拿到 401 并立即停止。",
+    "noBilling": "重放不经过转发管线：不写请求日志、不计入用量统计。流式请求同样可以重放——SSE 数据块会被聚合成一条独立的重放响应存进查看器。",
+    "noSnapshot": "这条请求没有重放快照：它是在此功能上线前抓的，或请求体超过了大小上限。",
+    "fromReplay": "重放响应（未发给客户端）",
+    "attempts": "第 {{attempts}} 次 · 连续成功 {{consecutive}}/{{required}}",
+    "snapshotMeta": "body {{body}} KB · {{headers}} 个头 · model={{model}}",
+    "validationFailed": "以下字段超出有效范围: {{fields}}",
+    "invalidStatusCode": "可重试状态码无效: {{value}}（需 100~599）",
+    "state": {
+      "running": "重放中",
+      "succeeded": "已拿到席位",
+      "failed": "已停止（不可重试）",
+      "capped": "已停止（达上限）",
+      "stopped": "已停止"
+    },
+    "mode": {
+      "fixed": "固定间隔",
+      "backoff": "指数退避"
+    },
+    "fields": {
+      "mode": "节奏",
+      "intervalSecs": "间隔（秒）",
+      "backoffStartSecs": "退避起始（秒）",
+      "backoffMultPercent": "退避倍数（%）",
+      "backoffCapSecs": "退避封顶（秒）",
+      "requiredConsecutive": "连续成功次数",
+      "retryableStatuses": "可重试状态码",
+      "maxAttempts": "最大次数",
+      "maxDurationMinutes": "最长时长（分钟）"
+    },
+    "hints": {
+      "intervalSecs": "两次尝试之间等待多久（1-3600）",
+      "backoffStartSecs": "第一次等多久，之后逐级变长（1-3600）",
+      "backoffMultPercent": "200 表示每次翻倍（100-1000）",
+      "backoffCapSecs": "等待时间不会超过这个值（1-3600）",
+      "requiredConsecutive": "连续成功这么多次才算拿到席位并停止（1-10）；填 1 = 第一次 2xx 就停",
+      "retryableStatuses": "逗号分隔。只有列出的状态码会重试，其它（401/403/400…）立即停止；网络错误与超时始终重试。默认 500",
+      "maxAttempts": "用掉这么多次后停止并通知（1-100000）",
+      "maxDurationMinutes": "无论结果如何，超过这个时长就停（1-1440）"
+    }
   },
   "gateway": {
     "enable": {

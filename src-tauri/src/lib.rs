@@ -440,6 +440,9 @@ pub fn run() {
         })
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
+        // 重放器成功/失败时的系统通知。仅 Rust 侧经 NotificationExt 调用，前端不调
+        // notification API → capabilities 无需加 notification:default。
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
@@ -1418,6 +1421,10 @@ pub fn run() {
             commands::set_debug_capture_enabled,
             commands::get_debug_capture_events,
             commands::clear_debug_capture,
+            commands::get_debug_capture_snapshot,
+            commands::start_replay,
+            commands::stop_replay,
+            commands::get_replay_status,
             commands::restart_app,
             commands::install_update_and_restart,
             commands::check_app_update_available,

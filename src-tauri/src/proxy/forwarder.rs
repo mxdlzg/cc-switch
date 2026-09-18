@@ -1761,7 +1761,8 @@ impl RequestForwarder {
         }
         // 请求调试捕获（纯内存、临时）：记录发往上游的最终请求体。关闭时首行返回。
         // 与接管/网关无关——两种模式都经过此处，捕获的是同一份出站 JSON。
-        super::debug_capture::record_request(
+        // 留下的 seq 是重放快照的关联键（发送前那一刻才写快照，见下方）。
+        let capture_request_seq = super::debug_capture::record_request(
             &self.session_id,
             app_type.as_str(),
             &provider.id,
@@ -2381,6 +2382,36 @@ impl RequestForwarder {
             body_bytes.len(),
             short_value_hash(Some(&filtered_body))
         );
+
+        // 重放快照（纯内存、临时）：此刻 method / url / 最终头集合 / body 字节四元组
+        // 齐备，存下来就能在查看器里把这一条原样重发。刻意放在 send 之前（此后
+        // ordered_headers / body_bytes 均被 move）；关闭抓取时 seq 为 None，直接短路，
+        // 零额外序列化。头里含鉴权，因此这份快照**不回读 provider**——用户可以一边
+        // 重打被限流的上游、一边切到别的 provider 正常使用。
+        if let Some(seq) = capture_request_seq {
+            let headers = ordered_headers
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.as_str().to_string(),
+                        String::from_utf8_lossy(v.as_bytes()).into_owned(),
+                    )
+                })
+                .collect();
+            super::debug_capture::record_snapshot(
+                capture_request_seq,
+                super::debug_capture::RequestSnapshot {
+                    method: method.as_str().to_string(),
+                    url: url.clone(),
+                    headers,
+                    body: body_bytes.clone(),
+                    session_id: self.session_id.clone(),
+                    app_type: app_type.as_str().to_string(),
+                    provider_id: provider.id.clone(),
+                    model: outbound_model.clone().unwrap_or_default(),
+                },
+            );
+        }
 
         // 确定超时
         let timeout = if self.non_streaming_timeout.is_zero() {

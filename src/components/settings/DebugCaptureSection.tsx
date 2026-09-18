@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { History } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -30,6 +31,9 @@ import {
   useDebugCaptureEvents,
   useSetDebugCaptureEnabled,
 } from "@/lib/query/debugCapture";
+import type { ReplaySnapshotInfo } from "@/lib/api/replay";
+import { fetchReplaySnapshotInfo } from "@/lib/query/replay";
+import { ReplayConfigDialog } from "@/components/settings/ReplayConfigDialog";
 
 /** 各捕获步骤的徽章配色：错误一眼可辨，入站/出站/响应区分开。 */
 const KIND_CLASS: Record<CaptureKind, string> = {
@@ -37,6 +41,7 @@ const KIND_CLASS: Record<CaptureKind, string> = {
   request: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
   response: "bg-green-500/15 text-green-700 dark:text-green-400",
   error: "bg-red-500/15 text-red-600 dark:text-red-400",
+  replay_response: "bg-teal-500/15 text-teal-700 dark:text-teal-400",
 };
 
 /**
@@ -55,8 +60,10 @@ interface Turn {
   providerId: string;
   model: string;
   hasError: boolean;
-  /** 有终态事件（response / error） */
+  /** 有终态事件（response / error / replay_response） */
   hasTerminal: boolean;
+  /** 可重放的出站请求条目 seq（没有出站请求条目则为 null） */
+  replayableSeq: number | null;
 }
 
 function buildTurns(events: CaptureEvent[]): Turn[] {
@@ -75,14 +82,22 @@ function buildTurns(events: CaptureEvent[]): Turn[] {
         model: ev.model,
         hasError: false,
         hasTerminal: false,
+        replayableSeq: null,
       });
     }
     const turn = turns[turns.length - 1];
     if (ev.kind === "error") turn.hasError = true;
-    if (ev.kind === "response" || ev.kind === "error") turn.hasTerminal = true;
+    if (ev.kind === "response" || ev.kind === "error" || ev.kind === "replay_response")
+      turn.hasTerminal = true;
     // 模型名以出站上送的那条为准（映射后的名字），其次任意非空。
     if (ev.kind === "request" && ev.model) turn.model = ev.model;
     else if (!turn.model && ev.model) turn.model = ev.model;
+    if (ev.kind === "request") {
+      // 快照 keyed by 这条的 seq。能不能真重放要问后端（快照可能因 body 超过 8 MiB
+      // 硬顶而没存）；呈现层的 truncated 与此无关（那是 200k 字符的展示截断，
+      // 快照存的是完整字节），故此处不按 truncated 预判。
+      turn.replayableSeq = ev.seq;
+    }
   }
   return turns;
 }
@@ -210,6 +225,30 @@ export function DebugCaptureSection() {
     });
   };
 
+  // ── 重放 ────────────────────────────────────────────────────────────────
+  const [replayTarget, setReplayTarget] = useState<{
+    seq: number;
+    info: ReplaySnapshotInfo;
+  } | null>(null);
+
+  /**
+   * 点「重放」：先向后端确认这条真有快照。抓取自能存快照的版本上线之前、或 body
+   * 超过快照硬顶的条目拿不到快照 —— 这时给提示而不是开一个必然失败的弹窗。
+   */
+  const onReplayRequest = async (turn: Turn) => {
+    if (turn.replayableSeq === null) return;
+    try {
+      const info = await fetchReplaySnapshotInfo(turn.replayableSeq);
+      if (!info.available) {
+        toast.error(t("replay.noSnapshot"));
+        return;
+      }
+      setReplayTarget({ seq: turn.replayableSeq, info });
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
   const allEmpty = chronological.length === 0;
 
   /** 列表行里的管道进度：客户端→上游→响应，缺的那步标灰。 */
@@ -248,11 +287,11 @@ export function DebugCaptureSection() {
     const head = turn.events[0];
     const status = turn.events[turn.events.length - 1].status;
     return (
-      <li key={turn.key}>
+      <li key={turn.key} className="flex items-stretch">
         <button
           type="button"
           onClick={() => setSelectedKey(turn.key)}
-          className={`w-full rounded px-2 py-1.5 text-left text-xs hover:bg-muted/60 ${
+          className={`min-w-0 flex-1 rounded px-2 py-1.5 text-left text-xs hover:bg-muted/60 ${
             active ? "bg-muted" : ""
           }`}
         >
@@ -282,6 +321,19 @@ export function DebugCaptureSection() {
             {renderPipeline(turn)}
           </div>
         </button>
+        {/* 重放入口：整宽按钮里不能再嵌 button，故本行改成 flex 兄弟节点。
+            没有出站请求条目（如只抓到客户端入站）就没有可重放的东西。 */}
+        {turn.replayableSeq !== null && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-auto w-9 shrink-0 self-center px-0 text-[11px] text-muted-foreground hover:text-foreground"
+            title={t("replay.tip")}
+            onClick={() => onReplayRequest(turn)}
+          >
+            <History className="h-3.5 w-3.5" />
+          </Button>
+        )}
       </li>
     );
   };
@@ -357,6 +409,9 @@ export function DebugCaptureSection() {
                               "转换后响应",
                             )}
                       </span>
+                    )}
+                    {ev.kind === "replay_response" && (
+                      <span>{t("replay.fromReplay")}</span>
                     )}
                     {ev.truncated && (
                       <span className="text-amber-600 dark:text-amber-500">
@@ -504,6 +559,15 @@ export function DebugCaptureSection() {
           )}
         </DialogContent>
       </Dialog>
+
+      <ReplayConfigDialog
+        open={replayTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setReplayTarget(null);
+        }}
+        seq={replayTarget?.seq ?? null}
+        info={replayTarget?.info ?? null}
+      />
     </div>
   );
 }

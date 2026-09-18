@@ -472,7 +472,8 @@
           "client_request": "クライアント",
           "request": "上流",
           "response": "レスポンス",
-          "error": "エラー"
+          "error": "エラー",
+          "replay_response": "再生"
         }
       }
     },
@@ -3019,6 +3020,55 @@
     "maxRetries": "最大リトライ回数",
     "degradedThreshold": "低速判定しきい値（ミリ秒）",
     "error": "{{providerName}} のチェックでエラーが発生しました: {{error}}"
+  },
+  "replay": {
+    "title": "リクエスト再生",
+    "description": "捕捉したリクエストを指定間隔で自動再送し、席が取れたら停止してシステム通知を出す",
+    "tip": "このリクエストを再生",
+    "idleHint": "再生タスクはありません。「設定 → 詳細設定 → リクエストデバッグ捕捉」のビューアを開き、Upstream のステップがあるリクエストを選んで右側の再生ボタンを押してください。同時接続枠が制限され、他の人は 500 しか返されない事業者向けの手当てです。",
+    "dialogTitle": "再生の設定",
+    "start": "再生を開始",
+    "stop": "停止",
+    "freezeWarning": "再生するのは捕捉した瞬間に確定していた生のバイト列です（URL・ヘッダー・API キーを含む）。現在のプロバイダや引き継ぎスイッチには追随しません：元の相手への詰めを走らせたまま、別プロバイダに切り替えて通常どおり使えます。代償として、その間に鍵をローテートすると 401 が続いて即停止します。",
+    "noBilling": "再生は転送パイプラインを通りません：リクエストログに書かれず、使用量統計にも入りません。ストリーミング・リクエストも再生できます——SSE チャンクを束ねて別の捕捉エントリとして保存します。",
+    "noSnapshot": "このリクエストには再生スナップショットがありません：この機能の実装前に捕捉されたか、本文がサイズ上限を超えています。",
+    "fromReplay": "再生の応答（クライアントには送られていません）",
+    "attempts": "{{attempts}} 回目 · 連続成功 {{consecutive}}/{{required}}",
+    "snapshotMeta": "body {{body}} KB · ヘッダー {{headers}} 件 · model={{model}}",
+    "validationFailed": "範囲外です: {{fields}}",
+    "invalidStatusCode": "再試行ステータスコードが無効です: {{value}}（100〜599）",
+    "state": {
+      "running": "再生中",
+      "succeeded": "席を取得",
+      "failed": "停止（再試行不可）",
+      "capped": "停止（上限到達）",
+      "stopped": "停止"
+    },
+    "mode": {
+      "fixed": "固定間隔",
+      "backoff": "指数バックオフ"
+    },
+    "fields": {
+      "mode": "間隔の取り方",
+      "intervalSecs": "間隔（秒）",
+      "backoffStartSecs": "バックオフ開始（秒）",
+      "backoffMultPercent": "バックオフ倍率（%）",
+      "backoffCapSecs": "バックオフ上限（秒）",
+      "requiredConsecutive": "必要な連続成功数",
+      "retryableStatuses": "再試行するステータスコード",
+      "maxAttempts": "最大試行回数",
+      "maxDurationMinutes": "最大実行時間（分）"
+    },
+    "hints": {
+      "intervalSecs": "試行と試行の待ち時間（1-3600）",
+      "backoffStartSecs": "最初の待ち時間、以降は段階的に伸びます（1-3600）",
+      "backoffMultPercent": "200 で毎回2倍（100-1000）",
+      "backoffCapSecs": "待ち時間がこれを超えることはありません（1-3600）",
+      "requiredConsecutive": "これだけ連続で成功したら席を取得として停止（1-10）。1 = 最初の 2xx で停止",
+      "retryableStatuses": "カンマ区切り。列挙したコードのみ再試行し、それ以外（401/403/400 など）は即停止。ネットワークエラーとタイムアウトは常に再試行します。既定: 500",
+      "maxAttempts": "この回数を使い切ったら停止して通知（1-100000）",
+      "maxDurationMinutes": "結果にかかわらず、この時間で停止（1-1440）"
+    }
   },
   "gateway": {
     "enable": {
