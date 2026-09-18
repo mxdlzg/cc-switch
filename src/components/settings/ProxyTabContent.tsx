@@ -289,9 +289,7 @@ export function ProxyTabContent({
             <div className="flex items-center gap-3">
               <History className="h-5 w-5 text-teal-500" />
               <div className="text-left">
-                <h3 className="text-base font-semibold">
-                  {t("replay.title")}
-                </h3>
+                <h3 className="text-base font-semibold">{t("replay.title")}</h3>
                 <p className="text-sm text-muted-foreground font-normal">
                   {t("replay.description")}
                 </p>

@@ -120,8 +120,7 @@ fn build_config(
             .rules
             .iter()
             .find(|r| r.app_type == app_type && r.provider_id == provider_id)
-            .map(|r| r.created_at_sec)
-            .unwrap_or(now_sec);
+            .map_or(now_sec, |r| r.created_at_sec);
 
         rules.push(IdleWatchRule {
             app_type,
@@ -209,9 +208,8 @@ pub fn get_channel_idle_status(
         let name = state
             .db
             .get_provider_by_id(&rule.provider_id, &rule.app_type)?
-            .map(|p| p.name)
             // 供应商已删：后台下一轮会把这条规则清掉，这里先按 id 显示，不报错。
-            .unwrap_or_else(|| rule.provider_id.clone());
+            .map_or_else(|| rule.provider_id.clone(), |p| p.name);
         rows.push(ChannelIdleStatus {
             app_type: rule.app_type.clone(),
             provider_id: rule.provider_id.clone(),

@@ -87,7 +87,11 @@ function buildTurns(events: CaptureEvent[]): Turn[] {
     }
     const turn = turns[turns.length - 1];
     if (ev.kind === "error") turn.hasError = true;
-    if (ev.kind === "response" || ev.kind === "error" || ev.kind === "replay_response")
+    if (
+      ev.kind === "response" ||
+      ev.kind === "error" ||
+      ev.kind === "replay_response"
+    )
       turn.hasTerminal = true;
     // 模型名以出站上送的那条为准（映射后的名字），其次任意非空。
     if (ev.kind === "request" && ev.model) turn.model = ev.model;

@@ -154,7 +154,9 @@ export function IdleWatchPanel() {
       return;
     }
     if (
-      view.rules.some((r) => r.appType === appType && r.providerId === providerId)
+      view.rules.some(
+        (r) => r.appType === appType && r.providerId === providerId,
+      )
     ) {
       toast.error(t("idleWatch.duplicate"));
       return;
@@ -177,7 +179,9 @@ export function IdleWatchPanel() {
   /** 规则行的渠道名：优先用状态表里后端解析好的名字，退化成 providerId。 */
   const ruleLabel = (rule: IdleWatchRuleInput) =>
     rows.find(
-      (r) => ruleKey(r.appType, r.providerId) === ruleKey(rule.appType, rule.providerId),
+      (r) =>
+        ruleKey(r.appType, r.providerId) ===
+        ruleKey(rule.appType, rule.providerId),
     )?.providerName ||
     rule.providerId ||
     "—";
@@ -196,7 +200,9 @@ export function IdleWatchPanel() {
           title={t("idleWatch.enabled")}
           description={t("idleWatch.enabledHint")}
           checked={view.enabled}
-          onCheckedChange={(checked) => void save({ ...view, enabled: checked })}
+          onCheckedChange={(checked) =>
+            void save({ ...view, enabled: checked })
+          }
         />
         <ToggleRow
           icon={<AlarmClock className="h-4 w-4 text-teal-500" />}
@@ -311,12 +317,17 @@ export function IdleWatchPanel() {
             </SelectContent>
           </Select>
 
-          <Select value={mode} onValueChange={(v) => setMode(v as IdleWatchMode)}>
+          <Select
+            value={mode}
+            onValueChange={(v) => setMode(v as IdleWatchMode)}
+          >
             <SelectTrigger className="h-8 w-[120px] text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="always">{t("idleWatch.mode.always")}</SelectItem>
+              <SelectItem value="always">
+                {t("idleWatch.mode.always")}
+              </SelectItem>
               <SelectItem value="once">{t("idleWatch.mode.once")}</SelectItem>
             </SelectContent>
           </Select>
@@ -337,14 +348,18 @@ export function IdleWatchPanel() {
           </Button>
         </div>
 
-        <p className="text-xs text-muted-foreground">{t("idleWatch.modeHint")}</p>
+        <p className="text-xs text-muted-foreground">
+          {t("idleWatch.modeHint")}
+        </p>
       </div>
 
       {/* 状态表 */}
       <div className="space-y-2">
         <h4 className="text-sm font-medium">{t("idleWatch.statusTitle")}</h4>
         {rows.length === 0 ? (
-          <p className="text-xs text-muted-foreground">{t("idleWatch.noRows")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("idleWatch.noRows")}
+          </p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-border">
             <table className="w-full text-sm">
@@ -405,7 +420,10 @@ export function IdleWatchPanel() {
                       {row.mode ? (
                         <Badge className="bg-orange-500/15 text-orange-600 dark:text-orange-400">
                           {t(`idleWatch.mode.${row.mode}`)}{" "}
-                          {formatIdleDuration((row.thresholdMinutes ?? 0) * 60, t)}
+                          {formatIdleDuration(
+                            (row.thresholdMinutes ?? 0) * 60,
+                            t,
+                          )}
                         </Badge>
                       ) : (
                         <span className="text-xs text-muted-foreground">—</span>

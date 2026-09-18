@@ -51,7 +51,8 @@ export function useChannelIdleStatus() {
 export function useSaveIdleWatchConfig() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (config: IdleWatchConfigInput) => idleWatchApi.saveConfig(config),
+    mutationFn: (config: IdleWatchConfigInput) =>
+      idleWatchApi.saveConfig(config),
     onSuccess: (saved: IdleWatchConfig) => {
       queryClient.setQueryData(idleWatchKeys.config, saved);
       // 规则增删改变状态表的「现有规则」列 → 立刻重取
@@ -79,16 +80,23 @@ export function useIdleWatchEventBridge() {
     let disposed = false;
 
     (async () => {
-      const off = await listen<IdleWatchAlert[]>("idle-watch-alert", (event) => {
-        for (const alert of event.payload) {
-          toast.warning(`${alert.providerName} · ${alert.appType}`, {
-            description: describeIdleAlert(alert, t),
-            duration: 8000,
+      const off = await listen<IdleWatchAlert[]>(
+        "idle-watch-alert",
+        (event) => {
+          for (const alert of event.payload) {
+            toast.warning(`${alert.providerName} · ${alert.appType}`, {
+              description: describeIdleAlert(alert, t),
+              duration: 8000,
+            });
+          }
+          void queryClient.invalidateQueries({
+            queryKey: idleWatchKeys.status,
           });
-        }
-        void queryClient.invalidateQueries({ queryKey: idleWatchKeys.status });
-        void queryClient.invalidateQueries({ queryKey: idleWatchKeys.config });
-      });
+          void queryClient.invalidateQueries({
+            queryKey: idleWatchKeys.config,
+          });
+        },
+      );
 
       if (disposed) off();
       else unlisten = off;

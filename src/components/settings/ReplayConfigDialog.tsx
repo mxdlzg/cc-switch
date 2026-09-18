@@ -152,13 +152,17 @@ export function ReplayConfigDialog({
               <Label>{t("replay.fields.mode")}</Label>
               <Select
                 value={form.mode}
-                onValueChange={(v) => set("mode", v as ReplayConfigInput["mode"])}
+                onValueChange={(v) =>
+                  set("mode", v as ReplayConfigInput["mode"])
+                }
               >
                 <SelectTrigger className="h-9 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="fixed">{t("replay.mode.fixed")}</SelectItem>
+                  <SelectItem value="fixed">
+                    {t("replay.mode.fixed")}
+                  </SelectItem>
                   <SelectItem value="backoff">
                     {t("replay.mode.backoff")}
                   </SelectItem>
@@ -208,7 +212,9 @@ export function ReplayConfigDialog({
           {/* 错误应对 */}
           <div className="space-y-3 rounded-lg border border-white/10 bg-muted/30 p-4">
             <div className="space-y-2">
-              <Label htmlFor="replay-retryable">{t("replay.fields.retryableStatuses")}</Label>
+              <Label htmlFor="replay-retryable">
+                {t("replay.fields.retryableStatuses")}
+              </Label>
               <Input
                 id="replay-retryable"
                 value={form.retryableStatuses}
@@ -235,7 +241,9 @@ export function ReplayConfigDialog({
             </div>
           </div>
 
-          <p className="text-xs text-muted-foreground">{t("replay.noBilling")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("replay.noBilling")}
+          </p>
         </div>
 
         <DialogFooter>
@@ -246,7 +254,10 @@ export function ReplayConfigDialog({
           >
             {t("common.cancel")}
           </Button>
-          <Button onClick={handleStart} disabled={startReplay.isPending || !info}>
+          <Button
+            onClick={handleStart}
+            disabled={startReplay.isPending || !info}
+          >
             {startReplay.isPending && (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             )}

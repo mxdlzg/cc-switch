@@ -4,7 +4,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { ReplayState } from "@/lib/api/replay";
-import { useReplayEventBridge, useReplayStatus, useStopReplay } from "@/lib/query/replay";
+import {
+  useReplayEventBridge,
+  useReplayStatus,
+  useStopReplay,
+} from "@/lib/query/replay";
 
 /** 终态徽章配色：成功绿、失败红、上限/停止灰。 */
 const STATE_CLASS: Record<ReplayState, string> = {
