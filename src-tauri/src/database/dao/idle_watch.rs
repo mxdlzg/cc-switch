@@ -106,9 +106,8 @@ impl Database {
     /// 原因原样讲出来（后台循环见错即跳过本轮，不崩、不牵动其它功能）。
     pub fn get_idle_watch_config(&self) -> Result<IdleWatchConfig, AppError> {
         match self.get_setting("idle_watch_config")? {
-            Some(json) => serde_json::from_str(&json).map_err(|e| {
-                AppError::Message(format!("解析渠道静默监控配置失败: {e}"))
-            }),
+            Some(json) => serde_json::from_str(&json)
+                .map_err(|e| AppError::Message(format!("解析渠道静默监控配置失败: {e}"))),
             None => Ok(IdleWatchConfig::default()),
         }
     }
@@ -220,13 +219,7 @@ mod tests {
                 request_id, provider_id, app_type, model, input_tokens, output_tokens,
                 total_cost_usd, latency_ms, status_code, created_at, data_source
              ) VALUES (?1, ?2, ?3, 'm', 1, 1, '0', 10, ?4, ?5, 'proxy')",
-            rusqlite::params![
-                request_id,
-                provider_id,
-                app_type,
-                status as i64,
-                created_at
-            ],
+            rusqlite::params![request_id, provider_id, app_type, status as i64, created_at],
         )
         .unwrap();
     }
@@ -322,7 +315,10 @@ mod tests {
         let row = &rows[0];
         assert_eq!(row.app_type, "claude");
         assert_eq!(row.success_count, 2);
-        assert_eq!(row.request_count, 3, "失败请求计入总数（面板据此区分全失败与没用过）");
+        assert_eq!(
+            row.request_count, 3,
+            "失败请求计入总数（面板据此区分全失败与没用过）"
+        );
         assert_eq!(row.last_success_at, Some(4_000));
         assert_eq!(row.provider_name, "prov-a", "providers 无此供应商时回落 id");
     }

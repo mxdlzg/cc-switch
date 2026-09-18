@@ -264,7 +264,9 @@ pub fn record_snapshot(request_seq: Option<u64>, snapshot: RequestSnapshot) {
     };
     // 队列饱和时事件可能被丢弃、快照却留下了 → 用硬顶兜住内存，按 seq 挤最旧。
     while guard.len() >= CAPTURE_CAP {
-        let Some((&oldest, _)) = guard.iter().next() else { break };
+        let Some((&oldest, _)) = guard.iter().next() else {
+            break;
+        };
         guard.remove(&oldest);
     }
     guard.insert(seq, snapshot);
@@ -342,7 +344,6 @@ fn push(
     }
     Some(seq)
 }
-
 
 /// 美化一个 JSON body；无法美化时退回原始字符串表示。
 fn pretty_json(value: &serde_json::Value) -> String {
@@ -649,7 +650,10 @@ mod tests {
                 record_request("s", "claude", "p", "m", &json!({"n": i}));
             }
             assert_eq!(snapshot().len(), CAPTURE_CAP);
-            assert!(get_snapshot(first).is_none(), "被挤出缓冲的条目其快照应联动删除");
+            assert!(
+                get_snapshot(first).is_none(),
+                "被挤出缓冲的条目其快照应联动删除"
+            );
         });
     }
 

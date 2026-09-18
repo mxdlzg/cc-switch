@@ -55,7 +55,9 @@ fn build_config(
         let app_type = item.app_type.trim().to_string();
         let provider_id = item.provider_id.trim().to_string();
         if app_type.is_empty() || provider_id.is_empty() {
-            return Err(AppError::InvalidInput("规则必须同时选择应用与供应商".into()));
+            return Err(AppError::InvalidInput(
+                "规则必须同时选择应用与供应商".into(),
+            ));
         }
         // 会话伪渠道（`_session` 等）没有渠道归属，加了规则也永远不会被正确评估
         // ——明确拒绝，而不是让用户对着一行「从未有成功请求」猜提醒为什么不来。
@@ -139,9 +141,7 @@ fn build_config(
 
 /// 读取静默监控配置。
 #[tauri::command]
-pub fn get_idle_watch_config(
-    state: State<'_, AppState>,
-) -> Result<IdleWatchConfig, AppError> {
+pub fn get_idle_watch_config(state: State<'_, AppState>) -> Result<IdleWatchConfig, AppError> {
     state.db.get_idle_watch_config()
 }
 
@@ -327,17 +327,22 @@ mod tests {
                 .mode,
             IdleWatchMode::Once
         );
-        assert!(
-            build_config(input(&[("mode", "weekly")]), &IdleWatchConfig::default(), NOW).is_err()
-        );
+        assert!(build_config(
+            input(&[("mode", "weekly")]),
+            &IdleWatchConfig::default(),
+            NOW
+        )
+        .is_err());
     }
 
     #[test]
     fn rejects_unknown_or_non_canonical_app_type() {
-        assert!(
-            build_config(input(&[("app_type", "notion")]), &IdleWatchConfig::default(), NOW)
-                .is_err()
-        );
+        assert!(build_config(
+            input(&[("app_type", "notion")]),
+            &IdleWatchConfig::default(),
+            NOW
+        )
+        .is_err());
         // 认识但写法不规范（下划线别名）也要拒：存进去后按原样查会落到另一个
         // 命名空间，规则会被后台当「渠道已删」清掉。
         assert!(build_config(

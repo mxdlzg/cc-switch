@@ -606,7 +606,10 @@ mod tests {
     fn only_listed_statuses_are_retryable() {
         let retryable = [500u16];
         assert!(status_retryable(500, &retryable));
-        assert!(!status_retryable(502, &retryable), "未列出的 5xx 默认不重试");
+        assert!(
+            !status_retryable(502, &retryable),
+            "未列出的 5xx 默认不重试"
+        );
         assert!(!status_retryable(401, &retryable));
         assert!(status_retryable(503, &[500, 503]));
         assert!(!status_retryable(500, &[]), "空集合 = 一切都不重试");

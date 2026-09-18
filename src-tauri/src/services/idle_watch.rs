@@ -24,8 +24,8 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::database::{IdleWatchConfig, IdleWatchMode, IdleWatchRule};
 use crate::database::Database;
+use crate::database::{IdleWatchConfig, IdleWatchMode, IdleWatchRule};
 
 /// 轮询间隔（秒）。阈值最小 1 分钟，60 秒的 tick 足够贴合，又不会让 SQL 常驻。
 const TICK_SECS: u64 = 60;
@@ -118,7 +118,6 @@ pub struct ChannelIdleStatus {
     pub mode: Option<IdleWatchMode>,
     pub threshold_minutes: Option<u64>,
 }
-
 
 /// 一条提醒的负载（前端面板据此 toast + 重取状态表）。不含密钥，纯展示信息。
 #[derive(Debug, Clone, Serialize)]
@@ -259,7 +258,9 @@ async fn run_tick(db: &Arc<Database>, app: &AppHandle) -> Result<(), String> {
                 }
                 survivors.push(rule);
             }
-            Decision::Fire { fired_count: new_count } => {
+            Decision::Fire {
+                fired_count: new_count,
+            } => {
                 let (keepalive_outcome, keepalive_error) = if config.keepalive_enabled {
                     keepalive(db, &rule).await
                 } else {
@@ -350,10 +351,7 @@ fn resolve_provider_names(db: &Database, rules: &[IdleWatchRule]) -> HashMap<Str
 ///
 /// 刻意**不写** `proxy_request_logs`（它不是代理流量），因此**不会重置计时基线**——
 /// 面板文案要讲清「保活不会让提醒停下来」，否则用户会以为开了保活就永远不被提醒。
-async fn keepalive(
-    db: &Arc<Database>,
-    rule: &IdleWatchRule,
-) -> (KeepaliveOutcome, Option<String>) {
+async fn keepalive(db: &Arc<Database>, rule: &IdleWatchRule) -> (KeepaliveOutcome, Option<String>) {
     use crate::services::{gateway, model_fetch};
 
     let prepared = {

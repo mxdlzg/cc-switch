@@ -114,10 +114,13 @@ fn build_config(input: ReplayConfigInput) -> Result<ReplayConfig, AppError> {
     };
 
     let interval_secs = parse_int("间隔秒数", &input.interval_secs, INTERVAL_MIN, INTERVAL_MAX)?;
-    let backoff_start_secs =
-        parse_int("退避起始秒数", &input.backoff_start_secs, INTERVAL_MIN, INTERVAL_MAX)?;
-    let backoff_cap_secs =
-        parse_int("退避封顶秒数", &input.backoff_cap_secs, CAP_MIN, CAP_MAX)?;
+    let backoff_start_secs = parse_int(
+        "退避起始秒数",
+        &input.backoff_start_secs,
+        INTERVAL_MIN,
+        INTERVAL_MAX,
+    )?;
+    let backoff_cap_secs = parse_int("退避封顶秒数", &input.backoff_cap_secs, CAP_MIN, CAP_MAX)?;
     let backoff_mult_percent = parse_int(
         "退避倍数(%)",
         &input.backoff_mult_percent,
@@ -248,7 +251,10 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_and_non_numeric() {
-        assert!(build_config(input(&[("interval_secs", "0")])).is_err(), "下限 1");
+        assert!(
+            build_config(input(&[("interval_secs", "0")])).is_err(),
+            "下限 1"
+        );
         assert!(build_config(input(&[("interval_secs", "3601")])).is_err());
         assert!(build_config(input(&[("interval_secs", "abc")])).is_err());
         assert!(build_config(input(&[("interval_secs", "2.5")])).is_err());
