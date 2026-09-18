@@ -24,7 +24,6 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use tokio::task::JoinHandle;
 
 use super::debug_capture::{self, RequestSnapshot};
 
@@ -220,7 +219,10 @@ fn status_retryable(status: u16, retryable: &[u16]) -> bool {
 struct RunningReplay {
     /// 任务标识：写状态/emit/通知前对账，避免被用户停止后立刻新起任务时旧任务串写。
     id: u64,
-    handle: JoinHandle<()>,
+    /// 注意是 **tauri** 的 JoinHandle，不是 `tokio::task::JoinHandle`——下面用
+    /// `tauri::async_runtime::spawn` 起任务，它返回的是 tauri 自己包的一层枚举
+    /// （无 feature 时内部是 tokio 句柄，但也**不是**同一个类型）。
+    handle: tauri::async_runtime::JoinHandle<()>,
     cancel: Arc<AtomicBool>,
     status: ReplayStatus,
 }
@@ -541,6 +543,9 @@ async fn wait_cancel(flag: &Arc<AtomicBool>) {
 
 /// 系统通知。Windows 上走原生 toast；前端不调 notification API，因此无需
 /// capability 授权（Rust 侧经插件直接发）。
+///
+/// 发送方法是 `show()`——builder **没有** `finish()`（那是别的 builder 的命名习惯，
+/// 照抄会编译不过）。
 fn notify(app: &AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
     if let Err(e) = app
@@ -548,7 +553,7 @@ fn notify(app: &AppHandle, title: &str, body: &str) {
         .builder()
         .title(title)
         .body(body)
-        .finish()
+        .show()
     {
         log::warn!("[Replay] 系统通知发送失败: {e}");
     }

@@ -420,6 +420,9 @@ async fn keepalive(db: &Arc<Database>, rule: &IdleWatchRule) -> (KeepaliveOutcom
 ///
 /// 中英拼一行：系统通知拿不到前端的 i18n 上下文，双语是成本最低的折中（重放器
 /// 通知同此处理）。
+///
+/// 发送方法是 `show()`——builder **没有** `finish()`（照抄别的 builder 的命名习惯
+/// 会编译不过）。
 fn notify(app: &AppHandle, alert: &IdleWatchAlert) {
     use tauri_plugin_notification::NotificationExt;
 
@@ -455,8 +458,8 @@ fn notify(app: &AppHandle, alert: &IdleWatchAlert) {
         .notification()
         .builder()
         .title("渠道静默提醒 / Idle channel")
-        .body(&body)
-        .finish()
+        .body(body)
+        .show()
     {
         log::warn!("[IdleWatch] 系统通知发送失败: {e}");
     }

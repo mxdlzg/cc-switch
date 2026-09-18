@@ -2395,7 +2395,10 @@ impl RequestForwarder {
         // ordered_headers / body_bytes 均被 move）；关闭抓取时 seq 为 None，直接短路，
         // 零额外序列化。头里含鉴权，因此这份快照**不回读 provider**——用户可以一边
         // 重打被限流的上游、一边切到别的 provider 正常使用。
-        if let Some(seq) = capture_request_seq {
+        //
+        // 这里只判 Some：record_snapshot 自己会解包并对 None 早退，再绑一次 `seq`
+        // 只是拿不到用处的名字（会撞 unused-variables，-D warnings 下即编译失败）。
+        if capture_request_seq.is_some() {
             let headers = ordered_headers
                 .iter()
                 .map(|(k, v)| {
