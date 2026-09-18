@@ -334,7 +334,7 @@ fn push(
     // 消费者就绪 → try_send：队列满时直接丢本次捕获，绝不阻塞转发主流程。
     // 无 tokio 运行时（如单元测试）→ 直写缓冲，保持语义一致。
     if ensure_consumer() {
-        let Some(tx) = TX.get() else { return None };
+        let tx = TX.get()?;
         if let Err(e) = tx.try_send(event) {
             log::debug!("[DebugCapture] 丢弃一条捕获（队列饱和）: {e}");
             return None;

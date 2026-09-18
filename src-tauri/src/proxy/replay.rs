@@ -467,19 +467,15 @@ async fn send_replay(
 async fn store_replay_response(mut resp: reqwest::Response, snap: &RequestSnapshot, status: u16) {
     let bytes = tokio::time::timeout(READ_DEADLINE, async {
         let mut out: Vec<u8> = Vec::new();
-        loop {
-            match resp.chunk().await {
-                Ok(Some(chunk)) => {
-                    if out.len() + chunk.len() > MAX_REPLAY_RESPONSE_BYTES {
-                        let room = MAX_REPLAY_RESPONSE_BYTES.saturating_sub(out.len());
-                        out.extend_from_slice(&chunk[..room]);
-                        break;
-                    }
-                    out.extend_from_slice(&chunk);
-                }
-                // 读错误或提前结束：已有部分照存，通知不该因为正文读崩了就发不出去。
-                _ => break,
+        // `while let Ok(Some(..))`：读错误（Err）与提前结束（Ok(None)）都直接退出，
+        // 已有部分照存——通知不该因为正文读崩了就发不出去。
+        while let Ok(Some(chunk)) = resp.chunk().await {
+            if out.len() + chunk.len() > MAX_REPLAY_RESPONSE_BYTES {
+                let room = MAX_REPLAY_RESPONSE_BYTES.saturating_sub(out.len());
+                out.extend_from_slice(&chunk[..room]);
+                break;
             }
+            out.extend_from_slice(&chunk);
         }
         out
     })
