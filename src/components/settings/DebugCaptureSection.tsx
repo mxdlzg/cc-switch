@@ -45,54 +45,77 @@ const KIND_CLASS: Record<CaptureKind, string> = {
 };
 
 /**
- * 一次 forward() 产生的四类事件在缓冲里相邻且共享 session_id，据此配对成「轮次」。
+ * 一轮问答 = **一次入站 HTTP 请求**（用户那一次回车），边界由后端 `turnId` 给出。
  *
- * 后端没有贯穿请求→响应的请求 id，只有 session_id（客户端提供或按内容哈希/随机
- * 生成，同一 session 可多轮）。用「连续同 session」分组：并发渠道会交错排列，
- * 同组不连续时拆成多轮展示——可能过度拆分（多轮被判定为一轮），但绝不把不同
- * 请求的 body 混进同一轮。
+ * 后端在 `RequestContext::new` 为每个入站请求发一个 turnId，本轮的入站/出站/响应/
+ * 错误事件共享它。故障转移或整流的重复 forward 各留一份入站+出站，但同属一轮，
+ * 所以列表里是一行、详情里是多个标签页（同类第 2 次起带 `(2)` 后缀）。
+ *
+ * 用 Map 按 turnId 归组，不用「相邻同 session」：并发请求的事件在环形缓冲里必然
+ * 交错，只有身份键能把它们分回各自轮次；session 是整段对话，只当过滤维度。
+ * 输入是 seq 升序，故每个 turn 的 events 天然保持时间正序。
  */
-interface Turn {
-  key: number;
+export interface Turn {
+  /** 后端轮次号：一行一个号，就是用户的那一次回车 */
+  turnId: number;
   events: CaptureEvent[];
   sessionId: string;
   appType: string;
-  providerId: string;
+  /** 本轮出现过的供应商（按首次出现顺序）；故障转移跨供应商时长度 > 1 */
+  providerIds: string[];
   model: string;
-  hasError: boolean;
+  /** 本轮最终成功（有 response / replay_response 条目） */
+  succeeded: boolean;
+  /** 本轮以失败收尾：有 error 且本轮没有任何成功条目——故障转移救回的一轮不算失败 */
+  errored: boolean;
+  /** 行首要展示的状态码：成功取最后一条成功条目的状态，否则取最后一条错误的 */
+  shownStatus: number | null;
+  /** 本轮内部的失败条目数（故障转移/整流的每一击各一条）；成功时也要显示 */
+  failedAttempts: number;
   /** 有终态事件（response / error / replay_response） */
   hasTerminal: boolean;
+  /** 结局那一步的 kind（故障转移救回=replay/response，纯失败=error）；未定局=null */
+  terminalKind: CaptureKind | null;
   /** 可重放的出站请求条目 seq（没有出站请求条目则为 null） */
   replayableSeq: number | null;
 }
 
-function buildTurns(events: CaptureEvent[]): Turn[] {
-  const turns: Turn[] = [];
+/** 终态条目：response / error / replay_response（客户端能拿到的结果）。 */
+function isTerminal(ev: CaptureEvent): boolean {
+  return (
+    ev.kind === "response" ||
+    ev.kind === "error" ||
+    ev.kind === "replay_response"
+  );
+}
+
+export function buildTurns(events: CaptureEvent[]): Turn[] {
+  const byTurn = new Map<number, Turn>();
   for (const ev of events) {
-    const head = turns[turns.length - 1];
-    if (head && head.sessionId === ev.sessionId) {
-      head.events.push(ev);
-    } else {
-      turns.push({
-        key: ev.seq,
-        events: [ev],
+    let turn = byTurn.get(ev.turnId);
+    if (!turn) {
+      turn = {
+        turnId: ev.turnId,
+        events: [],
         sessionId: ev.sessionId,
         appType: ev.appType,
-        providerId: ev.providerId,
-        model: ev.model,
-        hasError: false,
+        providerIds: [],
+        model: "",
+        succeeded: false,
+        errored: false,
+        shownStatus: null,
+        failedAttempts: 0,
         hasTerminal: false,
+        terminalKind: null,
         replayableSeq: null,
-      });
+      };
+      byTurn.set(ev.turnId, turn);
     }
-    const turn = turns[turns.length - 1];
-    if (ev.kind === "error") turn.hasError = true;
-    if (
-      ev.kind === "response" ||
-      ev.kind === "error" ||
-      ev.kind === "replay_response"
-    )
-      turn.hasTerminal = true;
+    turn.events.push(ev);
+    if (isTerminal(ev)) turn.hasTerminal = true;
+    if (!turn.providerIds.includes(ev.providerId)) {
+      turn.providerIds.push(ev.providerId);
+    }
     // 模型名以出站上送的那条为准（映射后的名字），其次任意非空。
     if (ev.kind === "request" && ev.model) turn.model = ev.model;
     else if (!turn.model && ev.model) turn.model = ev.model;
@@ -103,7 +126,39 @@ function buildTurns(events: CaptureEvent[]): Turn[] {
       turn.replayableSeq = ev.seq;
     }
   }
-  return turns;
+
+  // 结局要按时间看完全部事件才能定：故障转移的一轮常是「error(429) → response(200)」，
+  // 只要出现过成功条目，这一轮就是成功的（后面的成功盖掉前面的失败）。
+  for (const turn of byTurn.values()) {
+    const successes = turn.events.filter(
+      (e) => e.kind === "response" || e.kind === "replay_response",
+    );
+    const errors = turn.events.filter((e) => e.kind === "error");
+    turn.succeeded = successes.length > 0;
+    turn.failedAttempts = errors.length;
+    turn.errored = !turn.succeeded && errors.length > 0;
+    const outcome =
+      successes[successes.length - 1] ?? errors[errors.length - 1];
+    turn.terminalKind = outcome ? outcome.kind : null;
+    turn.shownStatus = outcome?.status ?? null;
+  }
+  return [...byTurn.values()];
+}
+
+/**
+ * 标签页标题：同一轮内同类事件可能有多份（故障转移/整流每次重试各留一份入站与
+ * 出站），只写「上游」会让人以为只有一个，故第 2 次起带 `(2)`、`(3)`。
+ *
+ * 刻意不用 `#N`：`#` 在本查看器里专指轮次号（行首那个），两个含义撞车更难读。
+ */
+function tabLabelOf(
+  kind: CaptureKind,
+  occurrence: number,
+  kindLabel: (kind: CaptureKind) => string,
+): string {
+  return occurrence > 0
+    ? `${kindLabel(kind)} (${occurrence + 1})`
+    : kindLabel(kind);
 }
 
 function channelKeyOf(ev: { appType: string; providerId: string }): string {
@@ -141,7 +196,7 @@ export function DebugCaptureSection() {
   const clearCapture = useClearDebugCapture();
   const { data: events } = useDebugCaptureEvents(!!enabled);
   const [viewerOpen, setViewerOpen] = useState(false);
-  const [selectedKey, setSelectedKey] = useState<number | null>(null);
+  const [selectedTurnId, setSelectedTurnId] = useState<number | null>(null);
   const [channelFilter, setChannelFilter] = useState<string>("all");
 
   // 渠道 = appType + providerId。只为捕获里出现过的 appType 拉供应商列表，
@@ -211,7 +266,7 @@ export function DebugCaptureSection() {
 
   // 选中项可能因清空/滚动而消失，回退到最新一条（同样避免渲染期 setState）。
   const selected =
-    turns.find((turn) => turn.key === selectedKey) ?? turns[0] ?? null;
+    turns.find((turn) => turn.turnId === selectedTurnId) ?? turns[0] ?? null;
 
   const channelLabel = (appType: string, providerId: string): string => {
     const appName = t(`apps.${appType}`, appType);
@@ -257,7 +312,9 @@ export function DebugCaptureSection() {
 
   /** 列表行里的管道进度：客户端→上游→响应，缺的那步标灰。 */
   const renderPipeline = (turn: Turn) => {
-    const lastKind: CaptureKind = turn.hasError ? "error" : "response";
+    // 末步按**结局**取：故障转移的一轮既有 error 又有 response，成功了就该亮「响应」；
+    // 重放产物那一轮亮「重放」。还没定局（流式/在途）时亮灰的「响应」。
+    const lastKind: CaptureKind = turn.terminalKind ?? "response";
     const steps: Array<{ kind: CaptureKind; ok: boolean }> = [
       {
         kind: "client_request",
@@ -287,26 +344,31 @@ export function DebugCaptureSection() {
   };
 
   const renderListItem = (turn: Turn) => {
-    const active = selected?.key === turn.key;
+    const active = selected?.turnId === turn.turnId;
     const head = turn.events[0];
-    const status = turn.events[turn.events.length - 1].status;
+    const status = turn.shownStatus;
     return (
-      <li key={turn.key} className="flex items-stretch">
+      <li key={turn.turnId} className="flex items-stretch">
         <button
           type="button"
-          onClick={() => setSelectedKey(turn.key)}
+          onClick={() => setSelectedTurnId(turn.turnId)}
           className={`min-w-0 flex-1 rounded px-2 py-1.5 text-left text-xs hover:bg-muted/60 ${
             active ? "bg-muted" : ""
           }`}
         >
           <div className="flex items-center gap-2">
+            {/* 轮次号 = 后端 turn_id，一行一个号 = 用户的一次回车。故障转移重试不
+                另起行，只在本行的标签页里多出 (2)/(3)。 */}
+            <span className="font-mono text-muted-foreground/70">
+              #{turn.turnId}
+            </span>
             <span className="font-mono text-muted-foreground">
               {formatTime(head.atMs)}
             </span>
             {status !== null ? (
               <span
                 className={`font-mono ${
-                  turn.hasError
+                  turn.errored
                     ? "text-red-600 dark:text-red-400"
                     : "text-muted-foreground"
                 }`}
@@ -316,11 +378,33 @@ export function DebugCaptureSection() {
             ) : (
               <span className="text-amber-600 dark:text-amber-500">—</span>
             )}
+            {/* 本轮内部失败过几次（故障转移/整流重试）。成功时也标出来：否则
+                「200」看起来像一次就成了，看不出前面还撞了两次 429。 */}
+            {turn.failedAttempts > 0 && (
+              <span
+                className="font-mono text-amber-600 dark:text-amber-500"
+                title={t("settings.advanced.debugCapture.attemptNote", {
+                  // 与徽章同口径：说的是这一轮一共试了几次（含成功的那一次），
+                  // 不是失败次数——徽章写 ×3 而提示写「2 次失败」会自相矛盾。
+                  n: turn.failedAttempts + 1,
+                  defaultValue: `本轮共尝试 ${turn.failedAttempts + 1} 次（故障转移/整流重试）`,
+                })}
+              >
+                ×{turn.failedAttempts + 1}
+              </span>
+            )}
             <span className="truncate font-medium">{turn.model || "—"}</span>
           </div>
           <div className="mt-1 flex items-center justify-between gap-2">
             <span className="truncate text-muted-foreground">
-              {channelLabel(turn.appType, turn.providerId)}
+              {channelLabel(turn.appType, turn.providerIds[0] ?? "")}
+              {/* 故障转移：本轮真实试过的供应商不止一个，标出总数 */}
+              {turn.providerIds.length > 1 && (
+                <span className="text-amber-600 dark:text-amber-500">
+                  {" "}
+                  +{turn.providerIds.length - 1}
+                </span>
+              )}
             </span>
             {renderPipeline(turn)}
           </div>
@@ -343,19 +427,39 @@ export function DebugCaptureSection() {
   };
 
   /**
-   * 右列详情。`key={selected.key}` 让 Tabs 在换请求时重挂载，从而 defaultValue
+   * 右列详情。`key={turn.turnId}` 让 Tabs 在换轮次时重挂载，从而 defaultValue
    * 重新生效——默认落在终态那步（响应/错误），不必每次手动点。
    */
   const renderDetail = (turn: Turn) => {
-    const defaultTab = turn.hasError
-      ? turn.events.find((e) => e.kind === "error")?.seq
-      : turn.events.find((e) => e.kind === "response")?.seq;
+    // 默认落在**结局**那一条：成功看最后一条响应（故障转移时最后那次才是真结果），
+    // 失败看最后一条错误。用 findLast 语义（倒着找），不是本轮第一条。
+    const lastOf = (kind: CaptureKind) =>
+      [...turn.events].reverse().find((e) => e.kind === kind);
+    const defaultTab = turn.succeeded
+      ? (lastOf("response")?.seq ?? lastOf("replay_response")?.seq)
+      : turn.errored
+        ? lastOf("error")?.seq
+        : undefined;
     const fallbackTab = turn.events[turn.events.length - 1].seq;
+    // 同类事件的出现序号（供标签页打 #N）：一次换键 precompute，不在 map 里数。
+    const occurrences = new Map<number, number>();
+    const seen = new Map<CaptureKind, number>();
+    turn.events.forEach((ev, i) => {
+      const n = seen.get(ev.kind) ?? 0;
+      occurrences.set(i, n);
+      seen.set(ev.kind, n + 1);
+    });
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-4 py-2 text-xs">
           <span className="font-medium">
-            {channelLabel(turn.appType, turn.providerId)}
+            {channelLabel(turn.appType, turn.providerIds[0] ?? "")}
+            {turn.providerIds.length > 1 && (
+              <span className="text-amber-600 dark:text-amber-500">
+                {" "}
+                +{turn.providerIds.length - 1}
+              </span>
+            )}
           </span>
           <span className="font-mono text-muted-foreground">
             {turn.model || "—"}
@@ -363,21 +467,27 @@ export function DebugCaptureSection() {
           <span className="break-all font-mono text-muted-foreground">
             {`session=${turn.sessionId || "—"}`}
           </span>
+          <span className="font-mono text-muted-foreground">
+            {`#${turn.turnId}`}
+          </span>
           {renderPipeline(turn)}
         </div>
         <Tabs
-          key={turn.key}
+          key={turn.turnId}
           defaultValue={String(defaultTab ?? fallbackTab)}
           className="flex min-h-0 flex-1 flex-col"
         >
-          <TabsList className="mx-4 mt-2 self-start">
-            {turn.events.map((ev) => (
+          {/* 故障转移/整流的一轮可能有好几个标签页，原语给了每个 trigger
+              min-w-[120px] 且不换行，会横向撑出弹窗；这里就地换行（不动原语，
+              别处的 Tabs 不需要换行）。 */}
+          <TabsList className="mx-4 mt-2 max-w-[calc(100%-2rem)] flex-wrap justify-start self-start">
+            {turn.events.map((ev, i) => (
               <TabsTrigger
                 key={ev.seq}
                 value={String(ev.seq)}
                 className="gap-1.5"
               >
-                {kindLabel(ev.kind)}
+                {tabLabelOf(ev.kind, occurrences.get(i) ?? 0, kindLabel)}
                 {ev.truncated && (
                   <span className="text-amber-600 dark:text-amber-500">·</span>
                 )}
@@ -502,6 +612,14 @@ export function DebugCaptureSection() {
             <DialogTitle>
               {t("settings.advanced.debugCapture.viewerTitle", "捕获查看器")}
             </DialogTitle>
+            {/* 用户在这里最容易迷失的是「哪个是一轮」：轮次号由后端按入站请求发号，
+                一句话讲清「一行 = 一次请求」以及重试为什么不另起行。 */}
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "settings.advanced.debugCapture.turnLegend",
+                "一行 = 一次请求（# 是它的轮次号）。故障转移/整流的重试仍在这一行里，只多开几个标签页，不会另起一行。",
+              )}
+            </p>
           </DialogHeader>
 
           {allEmpty ? (

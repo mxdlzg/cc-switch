@@ -469,6 +469,8 @@
         "filterAll": "全部渠道",
         "noTerminal": "无响应（流式或进行中）",
         "stepCount": "{{n}} 步",
+        "turnLegend": "一行 = 一次请求（# 是它的轮次号）。故障转移/整流的重试仍在这一行里，只多开几个标签页，不会另起一行。",
+        "attemptNote": "本轮共尝试 {{n}} 次（故障转移/整流重试）",
         "kind": {
           "client_request": "客户端",
           "request": "上游",

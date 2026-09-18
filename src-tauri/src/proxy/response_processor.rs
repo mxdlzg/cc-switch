@@ -238,6 +238,7 @@ pub async fn handle_non_streaming(
     // 请求调试捕获:透传路径的非流式响应体 = 上游原文。关闭时首行返回。
     if super::debug_capture::is_enabled() {
         super::debug_capture::record_response(
+            ctx.capture_turn_id,
             &ctx.session_id,
             ctx.app_type_str,
             &ctx.provider.id,

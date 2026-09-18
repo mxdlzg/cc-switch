@@ -469,6 +469,8 @@
         "filterAll": "All channels",
         "noTerminal": "no response (streaming or in-flight)",
         "stepCount": "{{n}} step(s)",
+        "turnLegend": "One row = one request (# is its turn number). Failover / rectifier retries stay inside that row as extra tabs, never as new rows.",
+        "attemptNote": "{{n}} attempt(s) in this turn (failover / rectifier retries)",
         "kind": {
           "client_request": "Client",
           "request": "Upstream",

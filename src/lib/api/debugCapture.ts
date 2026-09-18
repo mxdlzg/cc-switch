@@ -24,10 +24,17 @@ export type CaptureKind =
 export interface CaptureEvent {
   /** 单调序号，后端排序键（同一毫秒内多请求也能定序） */
   seq: number;
+  /**
+   * 轮次号：**一次入站 HTTP 请求**一个，该轮的入站/出站/响应/错误事件共享它。
+   *
+   * 前端据此配对「一轮问答」——故障转移/整流会重进 forward()，同一次回车因此产生
+   * 多条事件但同一个 turnId，仍是一行。`sessionId` 是整段对话，不能当轮次边界。
+   */
+  turnId: number;
   /** 捕获时刻（Unix 毫秒） */
   atMs: number;
   kind: CaptureKind;
-  /** 会话 ID：并发同会话时靠时间线人工配对（后端没有贯穿请求/响应的 id） */
+  /** 会话 ID：整段对话共享，用于跨轮关联/过滤（不用于分轮） */
   sessionId: string;
   appType: string;
   providerId: string;

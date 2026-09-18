@@ -924,6 +924,7 @@ async fn handle_claude_transform(
     if super::debug_capture::is_enabled() {
         let body = serde_json::to_string(&anthropic_response).unwrap_or_default();
         super::debug_capture::record_response(
+            ctx.capture_turn_id,
             &ctx.session_id,
             ctx.app_type_str,
             &ctx.provider.id,

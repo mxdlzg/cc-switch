@@ -14,8 +14,11 @@
 //! - **流式响应不在这里捕获**：SSE 走透传、体积极大且非本次 debug 目标，
 //!   仅捕获「请求 + 非流式响应 + 错误体」。
 //!
-//! 关联：没有贯穿请求/响应的 request_id（DB 里的 `request_id` 是响应回来后才由
-//! `message_id` 派生的），故各条只带 `session_id`，前端按会话 + 时间线人工配对。
+//! 关联键：`turn_id` 标记**一次入站 HTTP 请求**，同一轮内的入站/出站/响应/错误
+//! 事件共享它，前端据此配对成「一轮问答」。`session_id` 是**整段对话**（客户端带的
+//! metadata.session_id），一轮对话里有几十次往返，只能当过滤维度、不能当轮次边界。
+//! 故障转移/整流的同请求重试会再次进 forward()，它们**共用同一个 turn_id**——用户
+//! 眼里的「一轮」是他按的那一次回车，不是我们内部试了几个供应商。
 //!
 //! 重放快照：查看器里的条目只有 body 文本，缺 method / URL / 头，无法独立重发。
 //! 发送前那一刻四元组才齐备，故另存一张 [`RequestSnapshot`] 旁路表（按请求条目的
@@ -56,6 +59,18 @@ static BUFFER: OnceLock<Mutex<VecDeque<CaptureEvent>>> = OnceLock::new();
 
 /// 单调递增序号，供前端排序 / 去重（同一毫秒内多请求也能定序）。
 static SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 轮次号发号器：**每个入站 HTTP 请求一个**，由 `RequestContext::new` 取号。
+///
+/// 与 `SEQ` 分开是刻意的：`SEQ` 是条目排序键（每条事件一个），`TURN` 是轮次身份
+/// （一轮内多条事件共用）。并发请求的事件在缓冲里必然交错，只有独立身份键才能
+/// 把它们分回各自的轮次——按「相邻同 session」分组会把整段对话挤成一轮。
+static TURN: AtomicU64 = AtomicU64::new(0);
+
+/// 取一个新轮次号。在请求入口调一次，之后该请求的所有捕获点共用返回值。
+pub fn next_turn_id() -> u64 {
+    TURN.fetch_add(1, Ordering::Relaxed)
+}
 
 /// 重放快照旁路表：`seq`（`request` 条目的序号）→ 完整四元组。
 ///
@@ -109,6 +124,10 @@ pub struct RequestSnapshot {
 pub struct CaptureEvent {
     /// 单调序号（前端排序键）
     pub seq: u64,
+    /// **一次入站请求**的标识：同一轮内的入站/出站/响应/错误共享它。
+    /// 由 `RequestContext::new` 打号（每次 HTTP 请求一个），所以「一轮」等于用户那一次
+    /// 回车，而不是我们内部试了几个供应商。`session_id` 是整段对话，不能当轮次边界。
+    pub turn_id: u64,
     /// 捕获时刻（Unix 毫秒）
     pub at_ms: i64,
     pub kind: CaptureKind,
@@ -303,6 +322,7 @@ fn truncate(text: String) -> (String, bool) {
 #[allow(clippy::too_many_arguments)]
 fn push(
     kind: CaptureKind,
+    turn_id: u64,
     session_id: &str,
     app_type: &str,
     provider_id: &str,
@@ -319,6 +339,7 @@ fn push(
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let event = CaptureEvent {
         seq,
+        turn_id,
         at_ms: now_ms(),
         kind,
         session_id: session_id.to_string(),
@@ -353,6 +374,7 @@ fn pretty_json(value: &serde_json::Value) -> String {
 /// 捕获客户端原始请求体(未经任何映射/转换/过滤)。用于排查"客户端到底传进来
 /// 什么"——例如确认 Claude Code 是否真的带了 `thinking` / `output_config.effort`。
 pub fn record_client_request(
+    turn_id: u64,
     session_id: &str,
     app_type: &str,
     provider_id: &str,
@@ -364,6 +386,7 @@ pub fn record_client_request(
     }
     let _ = push(
         CaptureKind::ClientRequest,
+        turn_id,
         session_id,
         app_type,
         provider_id,
@@ -378,6 +401,7 @@ pub fn record_client_request(
 ///
 /// 返回入库的 `seq`——调用方（forwarder）拿它当关联键写重放快照。关闭态返回 None。
 pub fn record_request(
+    turn_id: u64,
     session_id: &str,
     app_type: &str,
     provider_id: &str,
@@ -389,6 +413,7 @@ pub fn record_request(
     }
     push(
         CaptureKind::Request,
+        turn_id,
         session_id,
         app_type,
         provider_id,
@@ -402,7 +427,9 @@ pub fn record_request(
 /// 捕获上游 2xx 非流式响应体。`bytes` 为解压后的原始响应字节。
 ///
 /// `raw_upstream=false` 表示字节来自格式转换后的响应（客户端所见），而非上游原文。
+#[allow(clippy::too_many_arguments)]
 pub fn record_response(
+    turn_id: u64,
     session_id: &str,
     app_type: &str,
     provider_id: &str,
@@ -421,6 +448,7 @@ pub fn record_response(
     };
     let _ = push(
         CaptureKind::Response,
+        turn_id,
         session_id,
         app_type,
         provider_id,
@@ -433,6 +461,7 @@ pub fn record_response(
 
 /// 捕获上游非 2xx 错误体。`body_text` 已是解压 + UTF-8 解码后的文本（可能为 None）。
 pub fn record_error(
+    turn_id: u64,
     session_id: &str,
     app_type: &str,
     provider_id: &str,
@@ -450,6 +479,7 @@ pub fn record_error(
     };
     let _ = push(
         CaptureKind::Error,
+        turn_id,
         session_id,
         app_type,
         provider_id,
@@ -486,6 +516,9 @@ pub fn record_replay_response(
     let (body, truncated) = truncate(body);
     buffer_push(CaptureEvent {
         seq: SEQ.fetch_add(1, Ordering::Relaxed),
+        // 自成一轮：重放不挂在任何 CLI 请求上（那份响应客户端从未收到），而且原请求
+        // 那一轮已有自己的响应——再塞第二个响应进去只会让「这轮的响应是哪个」更糊涂。
+        turn_id: next_turn_id(),
         at_ms: now_ms(),
         kind: CaptureKind::ReplayResponse,
         session_id: session_id.to_string(),
@@ -521,11 +554,18 @@ mod tests {
         with_isolated_buffer(|| {
             // 无 tokio 运行时的测试环境走直写兜底 → 同步、无轮询。
             set_enabled(false);
-            record_request("s", "claude", "p", "m", &json!({"a": 1}));
+            record_request(1, "s", "claude", "p", "m", &json!({"a": 1}));
             assert!(snapshot().is_empty(), "关闭态不应产生任何捕获");
 
             set_enabled(true);
-            record_request("s1", "claude", "prov", "model-x", &json!({ "hi": "there" }));
+            record_request(
+                1,
+                "s1",
+                "claude",
+                "prov",
+                "model-x",
+                &json!({ "hi": "there" }),
+            );
             let snap = snapshot();
             let ev = snap
                 .iter()
@@ -540,10 +580,44 @@ mod tests {
     }
 
     #[test]
+    fn turn_id_separates_interleaved_requests() {
+        with_isolated_buffer(|| {
+            set_enabled(true);
+            // 两个并发请求的事件在缓冲里必然交错；只有 turn_id 能把它们分回各自轮次
+            // （session 是整段对话，同一段对话里这两次回车共享它）。
+            let turn_a = next_turn_id();
+            let turn_b = next_turn_id();
+            assert!(turn_b > turn_a, "发号必须单调递增");
+            record_request(turn_a, "s", "claude", "p", "m", &json!({"n": "a"}));
+            record_request(turn_b, "s", "claude", "p", "m", &json!({"n": "b"}));
+            record_response(turn_a, "s", "claude", "p", "m", 200, br#"{"ok":1}"#, true);
+            record_response(turn_b, "s", "claude", "p", "m", 500, br#"{"ok":2}"#, true);
+
+            let snap = snapshot();
+            for turn in [turn_a, turn_b] {
+                let of_turn: Vec<&CaptureEvent> =
+                    snap.iter().filter(|e| e.turn_id == turn).collect();
+                assert_eq!(of_turn.len(), 2, "每个轮次应有请求+响应各一条");
+            }
+            let resp_a = snap
+                .iter()
+                .find(|e| e.turn_id == turn_a && e.kind == CaptureKind::Response)
+                .unwrap();
+            let resp_b = snap
+                .iter()
+                .find(|e| e.turn_id == turn_b && e.kind == CaptureKind::Response)
+                .unwrap();
+            assert_eq!(resp_a.status, Some(200));
+            assert_eq!(resp_b.status, Some(500), "同 session 也不该串到别的轮次");
+        });
+    }
+
+    #[test]
     fn error_body_captured_with_status() {
         with_isolated_buffer(|| {
             set_enabled(true);
             record_error(
+                1,
                 "s2",
                 "claude",
                 "prov",
@@ -572,6 +646,7 @@ mod tests {
             for i in 0..(CAPTURE_CAP + 5) {
                 buffer_push(CaptureEvent {
                     seq: i as u64,
+                    turn_id: 1,
                     at_ms: 0,
                     kind: CaptureKind::Request,
                     session_id: "s".into(),
@@ -611,7 +686,7 @@ mod tests {
         with_isolated_buffer(|| {
             set_enabled(false);
             assert_eq!(
-                record_request("s", "claude", "p", "m", &json!({"a": 1})),
+                record_request(1, "s", "claude", "p", "m", &json!({"a": 1})),
                 None,
                 "关闭态 record_request 不应返回 seq"
             );
@@ -619,7 +694,7 @@ mod tests {
             assert!(get_snapshot(999).is_none(), "关闭态不应存快照");
 
             set_enabled(true);
-            let seq = record_request("s1", "claude", "prov", "m", &json!({ "a": 1 }))
+            let seq = record_request(1, "s1", "claude", "prov", "m", &json!({ "a": 1 }))
                 .expect("开启态应返回 seq");
             record_snapshot(Some(seq), snap(br#"{"a":1}"#));
             let got = get_snapshot(seq).expect("应能按 seq 取回快照");
@@ -640,14 +715,14 @@ mod tests {
     fn snapshot_evicted_with_buffer_and_capped() {
         with_isolated_buffer(|| {
             set_enabled(true);
-            let first = record_request("s", "claude", "p", "m", &json!({"n": 0}))
+            let first = record_request(1, "s", "claude", "p", "m", &json!({"n": 0}))
                 .expect("开启态应返回 seq");
             record_snapshot(Some(first), snap(b"{}"));
             assert!(get_snapshot(first).is_some());
 
             // 挤爆环形缓冲 → 被挤掉那条的快照必须一起走，否则表会无界增长
             for i in 0..(CAPTURE_CAP + 1) {
-                record_request("s", "claude", "p", "m", &json!({"n": i}));
+                record_request(1, "s", "claude", "p", "m", &json!({"n": i}));
             }
             assert_eq!(snapshot().len(), CAPTURE_CAP);
             assert!(
@@ -661,7 +736,7 @@ mod tests {
     fn oversized_body_skips_snapshot() {
         with_isolated_buffer(|| {
             set_enabled(true);
-            let seq = record_request("s", "claude", "p", "m", &json!({"a": 1})).unwrap();
+            let seq = record_request(1, "s", "claude", "p", "m", &json!({"a": 1})).unwrap();
             let huge = vec![0u8; MAX_SNAPSHOT_BODY_BYTES + 1];
             record_snapshot(Some(seq), snap(&huge));
             assert!(
@@ -677,7 +752,7 @@ mod tests {
             // 用户可以先关抓取（缓冲保留可回看）再重放；成功通知写着「见查看器」，
             // 所以重放响应必须真能进去 —— 这是本模块唯一不受 ENABLED 管辖的写入。
             set_enabled(false);
-            record_request("s", "claude", "p", "m", &json!({"a": 1}));
+            record_request(1, "s", "claude", "p", "m", &json!({"a": 1}));
             assert!(snapshot().is_empty(), "普通捕获仍受开关管辖");
 
             record_replay_response("s9", "codex", "prov", "gpt-x", 200, br#"{"ok":true}"#);

@@ -469,6 +469,8 @@
         "filterAll": "すべてのチャネル",
         "noTerminal": "レスポンスなし（ストリーミングまたは処理中）",
         "stepCount": "{{n}} ステップ",
+        "turnLegend": "1 行 = リクエスト 1 回（# はターン番号）。フェイルオーバー／rectifier の再試行はこの行内の追加タブになり、行が増えることはありません。",
+        "attemptNote": "このターンで計 {{n}} 回試行（フェイルオーバー／rectifier の再試行）",
         "kind": {
           "client_request": "クライアント",
           "request": "上流",

@@ -469,6 +469,8 @@
         "filterAll": "全部管道",
         "noTerminal": "無回應（串流或進行中）",
         "stepCount": "{{n}} 步",
+        "turnLegend": "一行 = 一次請求（# 是它的輪次號）。故障轉移/整流的重試仍在這一行裡，只多開幾個標籤頁，不會另起一行。",
+        "attemptNote": "本輪共嘗試 {{n}} 次（故障轉移/整流重試）",
         "kind": {
           "client_request": "客戶端",
           "request": "上游",

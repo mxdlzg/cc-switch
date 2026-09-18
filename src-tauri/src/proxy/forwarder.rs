@@ -170,6 +170,8 @@ pub struct RequestForwarder {
     current_provider_id_at_start: String,
     /// 代理会话 ID（用于 Gemini Native shadow replay）
     session_id: String,
+    /// 本请求的调试捕获轮次号（一次入站请求一个，故障转移重试共用）
+    capture_turn_id: u64,
     /// Session ID 是否由客户端提供；生成值不能作为上游缓存身份。
     session_client_provided: bool,
     /// 整流器配置
@@ -257,6 +259,7 @@ impl RequestForwarder {
         app_handle: Option<tauri::AppHandle>,
         current_provider_id_at_start: String,
         session_id: String,
+        capture_turn_id: u64,
         session_client_provided: bool,
         streaming_first_byte_timeout: u64,
         _streaming_idle_timeout: u64,
@@ -279,6 +282,7 @@ impl RequestForwarder {
             app_handle,
             current_provider_id_at_start,
             session_id,
+            capture_turn_id,
             session_client_provided,
             rectifier_config,
             optimizer_config,
@@ -1208,6 +1212,7 @@ impl RequestForwarder {
         // 私有参数过滤）。出站捕获看到的是转换后的新 body，thinking/output_config
         // 等 claude 字段本就不透传，故无法据此判断客户端到底传了什么。关闭时首行返回。
         super::debug_capture::record_client_request(
+            self.capture_turn_id,
             &self.session_id,
             app_type.as_str(),
             &provider.id,
@@ -1770,6 +1775,7 @@ impl RequestForwarder {
         // 与接管/网关无关——两种模式都经过此处，捕获的是同一份出站 JSON。
         // 留下的 seq 是重放快照的关联键（发送前那一刻才写快照，见下方）。
         let capture_request_seq = super::debug_capture::record_request(
+            self.capture_turn_id,
             &self.session_id,
             app_type.as_str(),
             &provider.id,
@@ -2559,6 +2565,7 @@ impl RequestForwarder {
             // 请求调试捕获:上游非 2xx 的错误体原文(含你复现的 400 "system must be
             // at the beginning")。这里在转 ProxyError 之前抓,覆盖接管与网关两种模式。
             super::debug_capture::record_error(
+                self.capture_turn_id,
                 &self.session_id,
                 app_type.as_str(),
                 &provider.id,

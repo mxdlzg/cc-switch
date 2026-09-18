@@ -62,6 +62,8 @@ pub struct RequestContext {
     /// 应用类型（预留，目前通过 app_type_str 使用）
     #[allow(dead_code)]
     pub app_type: AppType,
+    /// 本轮的请求调试捕获轮次号（每个入站 HTTP 请求一个，见 debug_capture::next_turn_id）。
+    pub capture_turn_id: u64,
     /// Session ID（从客户端请求提取或新生成）
     pub session_id: String,
     /// Session ID 是否由客户端提供。生成的 UUID 不能作为上游缓存 key，否则每个请求都会换 key。
@@ -271,6 +273,9 @@ impl RequestContext {
             tag,
             app_type_str,
             app_type,
+            // 每个入站请求取一个轮次号：本请求内所有捕获点（含故障转移/整流的重复
+            // forward）共用它，前端据此把「一次问答」聚成一行。
+            capture_turn_id: crate::proxy::debug_capture::next_turn_id(),
             session_id,
             session_client_provided: session_result.client_provided,
             rectifier_config,
@@ -349,6 +354,7 @@ impl RequestContext {
             state.app_handle.clone(),
             self.current_provider_id.clone(),
             self.session_id.clone(),
+            self.capture_turn_id,
             self.session_client_provided,
             first_byte_timeout,
             idle_timeout,
