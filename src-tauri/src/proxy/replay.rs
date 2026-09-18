@@ -545,16 +545,12 @@ async fn wait_cancel(flag: &Arc<AtomicBool>) {
 /// capability 授权（Rust 侧经插件直接发）。
 ///
 /// 发送方法是 `show()`——builder **没有** `finish()`（那是别的 builder 的命名习惯，
-/// 照抄会编译不过）。
+/// 照抄会编译不过）。整条链**必须写在一行**：改成 `show` 之后链长 59，落进 rustfmt
+/// 的 `chain_width=60` 里，格式化器会要求合并成一行；手动拆行会被 `cargo fmt --check`
+/// 判失败（踩过：`.finish()` 时链长 61，刚好越过阈值，所以那时拆行是合法的）。
 fn notify(app: &AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
-    if let Err(e) = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-    {
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
         log::warn!("[Replay] 系统通知发送失败: {e}");
     }
 }
