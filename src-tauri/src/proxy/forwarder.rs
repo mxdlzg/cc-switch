@@ -4006,6 +4006,8 @@ mod tests {
             app_handle: None,
             current_provider_id_at_start: String::new(),
             session_id: String::new(),
+            // 测试里不校验轮次归属（那是 RequestContext::new 的发号逻辑），给 0 即可。
+            capture_turn_id: 0,
             session_client_provided: false,
             rectifier_config: RectifierConfig::default(),
             optimizer_config: OptimizerConfig::default(),
