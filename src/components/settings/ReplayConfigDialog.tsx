@@ -25,6 +25,7 @@ import {
   type ReplaySnapshotInfo,
 } from "@/lib/api/replay";
 import { useStartReplay } from "@/lib/query/replay";
+import { burstLadderPreview } from "@/lib/utils/replayPace";
 
 /** 与后端 commands/replay.rs 同规则的区间（前端预检，后端为准）。 */
 const RANGES = {
@@ -32,6 +33,9 @@ const RANGES = {
   backoffStartSecs: { min: 1, max: 3600 },
   backoffMultPercent: { min: 100, max: 1000 },
   backoffCapSecs: { min: 1, max: 3600 },
+  burstAttemptsPerRound: { min: 1, max: 50 },
+  burstRoundGapMinSecs: { min: 1, max: 3600 },
+  burstRoundGapMaxSecs: { min: 1, max: 3600 },
   requiredConsecutive: { min: 1, max: 10 },
   maxAttempts: { min: 1, max: 100000 },
   maxDurationMinutes: { min: 1, max: 1440 },
@@ -61,11 +65,20 @@ export function ReplayConfigDialog({
   const { t } = useTranslation();
   const startReplay = useStartReplay();
   const [form, setForm] = useState<ReplayConfigInput>(DEFAULT_REPLAY_CONFIG);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   // 每次打开回到默认值：抢席位参数按场景变化，留着上次的值容易误用。
   useEffect(() => {
-    if (open) setForm(DEFAULT_REPLAY_CONFIG);
+    if (open) {
+      setForm(DEFAULT_REPLAY_CONFIG);
+      setValidationError(null);
+    }
   }, [open]);
+
+  // 退避三件套（起始秒/倍数/封顶）在 backoff 与 burst 下都要填：burst 用它算**轮内**
+  // 间隔。写成变量而不是散在两处的 `mode === "backoff" || mode === "burst"`，免得
+  // 将来加模式时漏掉一处、出现「字段显示与校验不一致」。
+  const usesBackoff = form.mode === "backoff" || form.mode === "burst";
 
   const set = (key: keyof ReplayConfigInput, value: string) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -89,6 +102,17 @@ export function ReplayConfigDialog({
         defaultValue: `以下字段超出有效范围: ${bad.join("; ")}`,
       });
     }
+    // 轮间上下限倒置：后端明确拒绝（不静默交换），前端同规则预检，免得点了才开始
+    // 然后才发现填反了。区间非法时上面已经拦下，这里 parse 必然成功。
+    const gapMin = parse(form.burstRoundGapMinSecs);
+    const gapMax = parse(form.burstRoundGapMaxSecs);
+    if (gapMin > gapMax) {
+      return t("replay.gapOrderError", {
+        min: gapMin,
+        max: gapMax,
+        defaultValue: `轮间最小秒数（${gapMin}）不能大于最大秒数（${gapMax}）`,
+      });
+    }
     // 可重试状态码：逗号分隔，每项 100~599；空串允许（= 什么都不重试）。
     for (const part of form.retryableStatuses.split(",")) {
       const trimmed = part.trim();
@@ -106,7 +130,13 @@ export function ReplayConfigDialog({
 
   const handleStart = async () => {
     const error = validate();
-    if (error || seq === null) return;
+    if (error || seq === null) {
+      // 之前这里只是 `return`：点了「开始重放」什么也没发生、也没有话，用户只能猜
+      // 哪个字段填错了（轮间上下限填反尤其容易踩）。把校验文案就地显示出来。
+      setValidationError(error);
+      return;
+    }
+    setValidationError(null);
     try {
       await startReplay.mutateAsync({ seq, config: form });
       onOpenChange(false);
@@ -166,37 +196,72 @@ export function ReplayConfigDialog({
                   <SelectItem value="backoff">
                     {t("replay.mode.backoff")}
                   </SelectItem>
+                  <SelectItem value="burst">
+                    {t("replay.mode.burst")}
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              {form.mode === "fixed" ? (
+              {form.mode === "fixed" && (
                 <NumberField
                   labelKey="intervalSecs"
                   value={form.intervalSecs}
                   range={RANGES.intervalSecs}
                   onChange={(v) => set("intervalSecs", v)}
                 />
-              ) : (
+              )}
+              {/* 「每轮次数」排在退避三件套之前：burst 模式下它是第一个要决定的量，
+                  退避参数只是描述一轮*内部*怎么间隔。 */}
+              {form.mode === "burst" && (
+                <NumberField
+                  labelKey="burstAttemptsPerRound"
+                  value={form.burstAttemptsPerRound}
+                  range={RANGES.burstAttemptsPerRound}
+                  onChange={(v) => set("burstAttemptsPerRound", v)}
+                />
+              )}
+              {usesBackoff && (
+                <NumberField
+                  labelKey="backoffStartSecs"
+                  hintKey={
+                    form.mode === "burst" ? "backoffStartSecsBurst" : undefined
+                  }
+                  value={form.backoffStartSecs}
+                  range={RANGES.backoffStartSecs}
+                  onChange={(v) => set("backoffStartSecs", v)}
+                />
+              )}
+              {usesBackoff && (
+                <NumberField
+                  labelKey="backoffMultPercent"
+                  value={form.backoffMultPercent}
+                  range={RANGES.backoffMultPercent}
+                  onChange={(v) => set("backoffMultPercent", v)}
+                />
+              )}
+              {usesBackoff && (
+                <NumberField
+                  labelKey="backoffCapSecs"
+                  value={form.backoffCapSecs}
+                  range={RANGES.backoffCapSecs}
+                  onChange={(v) => set("backoffCapSecs", v)}
+                />
+              )}
+              {form.mode === "burst" && (
                 <>
                   <NumberField
-                    labelKey="backoffStartSecs"
-                    value={form.backoffStartSecs}
-                    range={RANGES.backoffStartSecs}
-                    onChange={(v) => set("backoffStartSecs", v)}
+                    labelKey="burstRoundGapMinSecs"
+                    value={form.burstRoundGapMinSecs}
+                    range={RANGES.burstRoundGapMinSecs}
+                    onChange={(v) => set("burstRoundGapMinSecs", v)}
                   />
                   <NumberField
-                    labelKey="backoffMultPercent"
-                    value={form.backoffMultPercent}
-                    range={RANGES.backoffMultPercent}
-                    onChange={(v) => set("backoffMultPercent", v)}
-                  />
-                  <NumberField
-                    labelKey="backoffCapSecs"
-                    value={form.backoffCapSecs}
-                    range={RANGES.backoffCapSecs}
-                    onChange={(v) => set("backoffCapSecs", v)}
+                    labelKey="burstRoundGapMaxSecs"
+                    value={form.burstRoundGapMaxSecs}
+                    range={RANGES.burstRoundGapMaxSecs}
+                    onChange={(v) => set("burstRoundGapMaxSecs", v)}
                   />
                 </>
               )}
@@ -207,6 +272,25 @@ export function ReplayConfigDialog({
                 onChange={(v) => set("requiredConsecutive", v)}
               />
             </div>
+
+            {/* burst 是两级节奏（轮内指数 + 轮间随机），光看六个输入框想不出节奏长
+                什么样。所以拿用户自己填的值把**第一轮**的等待序列算出来。
+                `burstLadderPreview` 只是显示用、不参与计算（真值以引擎为准），算错
+                最坏是预览不准——但用户照着它判断"要不要用这个模式"，所以有单测钉住。 */}
+            {form.mode === "burst" && (
+              <div className="space-y-1">
+                <p className="break-words font-mono text-xs text-muted-foreground">
+                  {burstLadderPreview(form)}{" "}
+                  {t("replay.hints.burstGap", {
+                    min: form.burstRoundGapMinSecs,
+                    max: form.burstRoundGapMaxSecs,
+                  })}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {t("replay.hints.burst")}
+                </p>
+              </div>
+            )}
           </div>
 
           {/* 错误应对 */}
@@ -244,6 +328,14 @@ export function ReplayConfigDialog({
           <p className="text-xs text-muted-foreground">
             {t("replay.noBilling")}
           </p>
+
+          {validationError && (
+            <Alert className="border-red-500/40 bg-red-500/10">
+              <AlertDescription className="text-xs">
+                {validationError}
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
 
         <DialogFooter>
@@ -271,12 +363,26 @@ export function ReplayConfigDialog({
 
 interface NumberFieldProps {
   labelKey: string;
+  /**
+   * 覆盖提示文案的 key（默认 `replay.hints.<labelKey>`）。
+   *
+   * 需要它是因为「退避起始秒」在两个模式下语义不同：`backoff` 里它是整条链的起点
+   * （一路涨到封顶），`burst` 里它是**每轮**的起点（每轮重置）。同一句话讲不清两件
+   * 事，所以各写一条。
+   */
+  hintKey?: string;
   value: string;
   range: { min: number; max: number };
   onChange: (value: string) => void;
 }
 
-function NumberField({ labelKey, value, range, onChange }: NumberFieldProps) {
+function NumberField({
+  labelKey,
+  hintKey,
+  value,
+  range,
+  onChange,
+}: NumberFieldProps) {
   const { t } = useTranslation();
   const id = `replay-${labelKey}`;
   return (
@@ -291,7 +397,7 @@ function NumberField({ labelKey, value, range, onChange }: NumberFieldProps) {
         onChange={(e) => onChange(e.target.value)}
       />
       <p className="text-xs text-muted-foreground">
-        {t(`replay.hints.${labelKey}`)}
+        {t(`replay.hints.${hintKey ?? labelKey}`)}
       </p>
     </div>
   );

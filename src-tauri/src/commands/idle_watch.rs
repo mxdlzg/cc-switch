@@ -14,9 +14,13 @@ use crate::store::AppState;
 use serde::Deserialize;
 use tauri::State;
 
-/// 阈值界限（分钟）。下限 1 分钟便于拿真机验证，上限 1440 = 一天。
+/// 阈值界限（分钟）。下限 1 分钟便于拿真机验证；上限 43200 = 30 天，覆盖「一周没
+/// 用也该提醒」这类真实场景（旧上限 1440 = 1 天设不出这种规则）。
+///
+/// 前端 `IdleWatchPanel` 的 `THRESHOLD` 必须同步改：它做同规则预检，两边不一致时
+/// 用户会看到「前端放过、后端报错」的分歧。
 const THRESHOLD_MIN: u64 = 1;
-const THRESHOLD_MAX: u64 = 1440;
+const THRESHOLD_MAX: u64 = 43200;
 
 /// 前端传来的规则（阈值为字符串，便于输入框直接绑定）。
 #[derive(Debug, Clone, Deserialize)]
@@ -103,8 +107,10 @@ fn build_config(
             .parse()
             .map_err(|_| AppError::InvalidInput(format!("阈值必须是整数分钟（当前: {raw}）")))?;
         if minutes < THRESHOLD_MIN as i64 || minutes > THRESHOLD_MAX as i64 {
+            // 上限换算成天数一起报：只说「43200 分钟」，用户仍然要自己心算是多久。
             return Err(AppError::InvalidInput(format!(
-                "阈值需在 {THRESHOLD_MIN}~{THRESHOLD_MAX} 分钟之间（当前: {minutes}）"
+                "阈值需在 {THRESHOLD_MIN} 分钟~{} 天（{THRESHOLD_MAX} 分钟）之间（当前: {minutes}）",
+                THRESHOLD_MAX / 1440
             )));
         }
 
@@ -294,7 +300,9 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_and_non_numeric_thresholds() {
-        for raw in ["0", "-1", "1441", "abc", "2.5", ""] {
+        // "2.5" 也被拒：单位换算是**前端**的事（用户可选分钟/小时/天），换算结果必须
+        // 落在整数分钟上再进来。后端只认整数分钟，这样 DAO 与判定逻辑不必支持小数。
+        for raw in ["0", "-1", "43201", "abc", "2.5", ""] {
             assert!(
                 build_config(
                     input(&[("threshold_minutes", raw)]),
@@ -305,15 +313,18 @@ mod tests {
                 "阈值 {raw:?} 应被拒绝"
             );
         }
-        assert!(
-            build_config(
-                input(&[("threshold_minutes", "1440")]),
-                &IdleWatchConfig::default(),
-                NOW
-            )
-            .is_ok(),
-            "上限本身合法"
-        );
+        // 两个上限边界：旧的 1440（1 天）与新的 43200（30 天）本身都合法。
+        for raw in ["1440", "43200"] {
+            assert!(
+                build_config(
+                    input(&[("threshold_minutes", raw)]),
+                    &IdleWatchConfig::default(),
+                    NOW
+                )
+                .is_ok(),
+                "上限 {raw} 本身合法"
+            );
+        }
     }
 
     #[test]

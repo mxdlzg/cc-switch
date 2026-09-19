@@ -59,13 +59,19 @@ pub fn get_debug_capture_snapshot(seq: u64) -> Result<ReplaySnapshotInfo, AppErr
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplayConfigInput {
-    /// `"fixed"` | `"backoff"`
+    /// `"fixed"` | `"backoff"` | `"burst"`
     pub mode: String,
     pub interval_secs: String,
     pub backoff_start_secs: String,
     /// 百分比整数（200 = ×2）
     pub backoff_mult_percent: String,
     pub backoff_cap_secs: String,
+    /// 一轮里连打几次（`burst` 用；轮内退避复用上面三个 backoff 字段）
+    pub burst_attempts_per_round: String,
+    /// 轮间随机间隔下限秒
+    pub burst_round_gap_min_secs: String,
+    /// 轮间随机间隔上限秒
+    pub burst_round_gap_max_secs: String,
     pub required_consecutive: String,
     /// 逗号分隔状态码，如 `"500"` 或 `"500, 503, 529"`
     pub retryable_statuses: String,
@@ -78,6 +84,8 @@ const INTERVAL_MIN: u64 = 1;
 const INTERVAL_MAX: u64 = 3600;
 const CAP_MIN: u64 = 1;
 const CAP_MAX: u64 = 3600;
+const BURST_PER_ROUND_MIN: u32 = 1;
+const BURST_PER_ROUND_MAX: u32 = 50;
 const CONSECUTIVE_MIN: u32 = 1;
 const CONSECUTIVE_MAX: u32 = 10;
 const MULT_MIN: u32 = 100;
@@ -102,13 +110,19 @@ fn parse_int(field: &str, raw: &str, min: u64, max: u64) -> Result<u64, AppError
 }
 
 /// 校验并转成引擎配置。
+///
+/// 数值**不分模式**一律解析并校验区间（与既有做法一致：`fixed` 模式也一样校验退避
+/// 三件套）。好处是校验规则只有一条「这份配置本身合法」，不会随模式切换而变——用户
+/// 在 burst 里填了倒置的轮间上下限，切回 fixed 保存就该同样被拦下，而不是「切回固定
+/// 间隔之后非法值又合法了」。
 fn build_config(input: ReplayConfigInput) -> Result<ReplayConfig, AppError> {
     let mode = match input.mode.trim().to_ascii_lowercase().as_str() {
         "fixed" => PaceMode::Fixed,
         "backoff" => PaceMode::Backoff,
+        "burst" => PaceMode::Burst,
         other => {
             return Err(AppError::InvalidInput(format!(
-                "未知节奏模式: {other}（应为 fixed 或 backoff）"
+                "未知节奏模式: {other}（应为 fixed、backoff 或 burst）"
             )))
         }
     };
@@ -127,6 +141,31 @@ fn build_config(input: ReplayConfigInput) -> Result<ReplayConfig, AppError> {
         MULT_MIN as u64,
         MULT_MAX as u64,
     )? as u32;
+    let burst_attempts_per_round = parse_int(
+        "每轮次数",
+        &input.burst_attempts_per_round,
+        BURST_PER_ROUND_MIN as u64,
+        BURST_PER_ROUND_MAX as u64,
+    )? as u32;
+    let burst_round_gap_min_secs = parse_int(
+        "轮间最小秒数",
+        &input.burst_round_gap_min_secs,
+        INTERVAL_MIN,
+        INTERVAL_MAX,
+    )?;
+    let burst_round_gap_max_secs = parse_int(
+        "轮间最大秒数",
+        &input.burst_round_gap_max_secs,
+        INTERVAL_MIN,
+        INTERVAL_MAX,
+    )?;
+    // 倒置要**明确拒绝**，不静默交换、也不静默按下限：静默改用户填的数字，比报个错
+    // 更容易踩坑（与 parse_int 同一立场）。引擎侧另有一层兜底，见 delay_after_with。
+    if burst_round_gap_min_secs > burst_round_gap_max_secs {
+        return Err(AppError::InvalidInput(format!(
+            "轮间最小秒数不能大于最大秒数（当前: {burst_round_gap_min_secs} > {burst_round_gap_max_secs}）"
+        )));
+    }
     let required_consecutive = parse_int(
         "连续成功次数",
         &input.required_consecutive,
@@ -175,6 +214,9 @@ fn build_config(input: ReplayConfigInput) -> Result<ReplayConfig, AppError> {
         backoff_start_secs,
         backoff_mult_percent,
         backoff_cap_secs,
+        burst_attempts_per_round,
+        burst_round_gap_min_secs,
+        burst_round_gap_max_secs,
         required_consecutive,
         retryable_statuses,
         max_attempts,
@@ -216,6 +258,9 @@ mod tests {
             backoff_start_secs: "2".into(),
             backoff_mult_percent: "200".into(),
             backoff_cap_secs: "30".into(),
+            burst_attempts_per_round: "5".into(),
+            burst_round_gap_min_secs: "30".into(),
+            burst_round_gap_max_secs: "180".into(),
             required_consecutive: "1".into(),
             retryable_statuses: "500".into(),
             max_attempts: "500".into(),
@@ -228,6 +273,9 @@ mod tests {
                 "backoff_start_secs" => input.backoff_start_secs = (*value).into(),
                 "backoff_mult_percent" => input.backoff_mult_percent = (*value).into(),
                 "backoff_cap_secs" => input.backoff_cap_secs = (*value).into(),
+                "burst_attempts_per_round" => input.burst_attempts_per_round = (*value).into(),
+                "burst_round_gap_min_secs" => input.burst_round_gap_min_secs = (*value).into(),
+                "burst_round_gap_max_secs" => input.burst_round_gap_max_secs = (*value).into(),
                 "required_consecutive" => input.required_consecutive = (*value).into(),
                 "retryable_statuses" => input.retryable_statuses = (*value).into(),
                 "max_attempts" => input.max_attempts = (*value).into(),
@@ -247,6 +295,43 @@ mod tests {
         assert_eq!(cfg.required_consecutive, 1);
         assert_eq!(cfg.max_attempts, 500);
         assert_eq!(cfg.max_duration_minutes, 60);
+        // burst 三件套即使当前模式用不到也要解析出来（校验规则不随模式切换而变）
+        assert_eq!(cfg.burst_attempts_per_round, 5);
+        assert_eq!(cfg.burst_round_gap_min_secs, 30);
+        assert_eq!(cfg.burst_round_gap_max_secs, 180);
+    }
+
+    #[test]
+    fn burst_mode_parses() {
+        let cfg = build_config(input(&[("mode", " Burst ")])).expect("burst 是合法模式");
+        assert_eq!(cfg.mode, PaceMode::Burst);
+    }
+
+    #[test]
+    fn rejects_inverted_round_gap_rather_than_swapping_it() {
+        // 静默交换=后端偷偷改用户填的数字；报错才讲得清到底填了什么
+        assert!(build_config(input(&[
+            ("burst_round_gap_min_secs", "180"),
+            ("burst_round_gap_max_secs", "30"),
+        ]))
+        .is_err());
+        // 相等是合法的（等于固定间隔，只是没有抖动）
+        assert!(build_config(input(&[
+            ("burst_round_gap_min_secs", "60"),
+            ("burst_round_gap_max_secs", "60"),
+        ]))
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_out_of_range_burst_fields() {
+        assert!(build_config(input(&[("burst_attempts_per_round", "0")])).is_err());
+        assert!(build_config(input(&[("burst_attempts_per_round", "51")])).is_err());
+        assert!(build_config(input(&[("burst_round_gap_min_secs", "0")])).is_err());
+        assert!(build_config(input(&[("burst_round_gap_max_secs", "3601")])).is_err());
+        assert!(build_config(input(&[("burst_attempts_per_round", "abc")])).is_err());
+        // 边界本身合法
+        assert!(build_config(input(&[("burst_attempts_per_round", "50")])).is_ok());
     }
 
     #[test]

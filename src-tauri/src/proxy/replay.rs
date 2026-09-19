@@ -52,6 +52,12 @@ pub enum PaceMode {
     Fixed,
     /// 指数退避（起 × 倍，封顶）
     Backoff,
+    /// 仿 Codex CLI 的两级节奏：一轮内连打 N 次（轮间指数退避），轮与轮之间随机间隔
+    ///
+    /// 与 `Backoff` 的区别不只是"多一层"：`Backoff` 是一条从头单调增长到封顶的退避
+    /// 链，一旦封顶就永远按封顶等；`Burst` 每轮把退避**重置**回起始秒，于是节奏始终是
+    /// 「密集一阵 → 停一段」，轮间长度还是随机的（固定链太好认，像脚本而不像客户端）。
+    Burst,
 }
 
 /// 任务状态。运行中为 `Running`，其余为终态。
@@ -81,6 +87,12 @@ pub struct ReplayConfig {
     pub backoff_mult_percent: u32,
     /// 退避封顶秒数
     pub backoff_cap_secs: u64,
+    /// 一轮里连打几次（`Burst` 用）。轮内退避复用上面三个 backoff 字段。
+    pub burst_attempts_per_round: u32,
+    /// 轮间随机间隔下限秒（`Burst` 用）
+    pub burst_round_gap_min_secs: u64,
+    /// 轮间随机间隔上限秒（`Burst` 用，命令层保证 ≥ min）
+    pub burst_round_gap_max_secs: u64,
     /// 需要连续成功几次才算成
     pub required_consecutive: u32,
     /// 可重试状态码集合，默认 `{500}`
@@ -92,27 +104,102 @@ pub struct ReplayConfig {
 }
 
 impl ReplayConfig {
-    /// 第 `attempt` 次尝试（从 1 开始）之后要等多久。纯函数，便于单测。
+    /// 第 `attempt` 次尝试（从 1 开始）之后要等多久。
+    ///
+    /// `Burst` 的轮间抖动从这里取真实熵；纯逻辑在 `delay_after_with` 里，单测走那条
+    /// 并自己喂 `rand_unit`，所以测试完全确定。
     pub fn delay_after(&self, attempt: u32) -> Duration {
+        self.delay_after_with(attempt, rand_unit_from_system())
+    }
+
+    /// 同上，但随机数由调用方给定（`rand_unit` ∈ [0,1)）——纯函数，便于单测。
+    ///
+    /// `Fixed` / `Backoff` 忽略 `rand_unit`。
+    pub fn delay_after_with(&self, attempt: u32, rand_unit: f64) -> Duration {
         match self.mode {
             PaceMode::Fixed => Duration::from_secs(self.interval_secs),
-            PaceMode::Backoff => {
-                // 倍数下限 100%：小于 1 会让等待越来越短，与「退避」相反。
-                let mult = self.backoff_mult_percent.max(100) as f64 / 100.0;
-                let cap = self.backoff_cap_secs.max(1) as f64;
-                let mut secs = self.backoff_start_secs.max(1) as f64;
-                // 逐次累乘并提前跳出，而不是 powf：大 attempt 下 powf 会溢出成 inf。
-                for _ in 1..attempt {
-                    secs *= mult;
-                    if secs >= cap {
-                        secs = cap;
-                        break;
-                    }
+            PaceMode::Backoff => Duration::from_secs(self.backoff_secs(attempt.max(1) as u64)),
+            PaceMode::Burst => {
+                // 每轮的长度至少 1 次。命令层已保证 ≥1，这里再兜一层：手改配置塞进
+                // 0 会让下面的取模除零 panic。
+                let per_round = self.burst_attempts_per_round.max(1) as u64;
+                // attempt 从 1 开始 → 转成 0 起的「本轮内第几次」。max(1) 只是防
+                // 越界调用（0 会让减法下溢），正常调用方从 1 起计数。
+                let pos = (attempt.max(1) as u64 - 1) % per_round;
+                if pos + 1 == per_round {
+                    // 本轮最后一次 → 轮间随机。max < min 只在配置被手改坏时出现，
+                    // 按下限处理（命令层已显式拒绝倒置，这里是互为兜底而不是替代）。
+                    let min = self.burst_round_gap_min_secs;
+                    let max = self.burst_round_gap_max_secs.max(min);
+                    // rand_unit 理论上 ∈ [0,1)。NaN 得**显式**挡：`f64::clamp` 对它
+                    // 无效（两个比较都为 false，于是原样返回 NaN），而 `NaN as u64`
+                    // 会静默变成 0 —— 那是「等到下限」的巧合，不该靠巧合。
+                    let r = if rand_unit.is_finite() {
+                        rand_unit.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    // 用 round 而不是截断：截断下 `r→1` 只能取到 max-1，用户设的上限
+                    // 永远取不到。round 后区间闭合，再 clamp 兜住 r==1.0 的边界。
+                    let secs = (min as f64 + (max - min) as f64 * r).round() as u64;
+                    Duration::from_secs(secs.clamp(min, max))
+                } else {
+                    // 轮内：与 Backoff 同一条指数曲线，但指数按**本轮内的位置**算，
+                    // 于是每轮都从 backoff_start_secs 重新开始（这正是与 Backoff 的
+                    // 区别——那条链封顶后就永远按封顶等）。
+                    Duration::from_secs(self.backoff_secs(pos + 1))
                 }
-                Duration::from_secs(secs.min(cap) as u64)
             }
         }
     }
+
+    /// 指数退避第 `n` 次（从 1 开始）之后的等待秒数。
+    ///
+    /// `Backoff` 拿全局 attempt、`Burst` 拿轮内位置，两者共用这条曲线。
+    fn backoff_secs(&self, n: u64) -> u64 {
+        // 倍数下限 100%：小于 1 会让等待越来越短，与「退避」相反。
+        let mult = self.backoff_mult_percent.max(100) as f64 / 100.0;
+        let cap = self.backoff_cap_secs.max(1) as f64;
+        let mut secs = self.backoff_start_secs.max(1) as f64;
+        // 逐次累乘并提前跳出，而不是 powf：大 n 下 powf 会溢出成 inf。
+        for _ in 1..n {
+            secs *= mult;
+            if secs >= cap {
+                secs = cap;
+                break;
+            }
+        }
+        secs.min(cap) as u64
+    }
+}
+
+/// 取一个 [0,1) 的抖动用随机数。
+///
+/// **不是密码学随机**：只为让轮间节奏不像脚本的固定表，不需要不可预测性。所以不引
+/// `rand` 依赖（`Cargo.toml` 没有它，加进来要为这点抖动churn 依赖树），改用
+/// splitmix64 推进一个进程内种子——首次用系统时间纳秒播种，之后每次推进都改变状态，
+/// 于是同一毫秒内的多次调用也不会拿到同一个值。
+fn rand_unit_from_system() -> f64 {
+    static STATE: AtomicU64 = AtomicU64::new(0);
+    let mut cur = STATE.load(Ordering::Relaxed);
+    if cur == 0 {
+        // 首次：用系统时间播种。种子本身不需要保密，混一点地址熵让不同进程/线程
+        // 同时启动也不至于完全同步。
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9E37_79B9_7F4A_7C15);
+        cur = nanos ^ (std::process::id() as u64).wrapping_mul(0xD1B5_4A32_D192_ED03);
+    }
+    // splitmix64 推进一步，并写回状态。Relaxed 足够：丢了偶发更新只是少推进一次。
+    cur = cur.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    STATE.store(cur, Ordering::Relaxed);
+    let mut z = cur;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // 取高 53 位 → [0,1)。53 位是 f64 能精确表示的整数位宽，不会有精度台阶。
+    (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
 /// 一条重放进度（emit 给前端，同时是 `get_replay_status` 的返回体）。
@@ -562,6 +649,10 @@ mod tests {
             backoff_start_secs: 2,
             backoff_mult_percent: 200,
             backoff_cap_secs: 30,
+            // 一轮 5 次、轮间 30~180 秒：与 mock 的「Codex 连打 5 次」描述对齐
+            burst_attempts_per_round: 5,
+            burst_round_gap_min_secs: 30,
+            burst_round_gap_max_secs: 180,
             required_consecutive: 1,
             retryable_statuses: vec![500],
             max_attempts: 500,
@@ -597,6 +688,84 @@ mod tests {
         c.backoff_mult_percent = 50; // <100% 会让等待越来越短，与退避相反
         assert_eq!(c.delay_after(1), Duration::from_secs(2));
         assert_eq!(c.delay_after(2), Duration::from_secs(2), "倍数被夹到 100%");
+    }
+
+    /// 一轮 5 次（start=2 / ×2 / cap=30）、轮间 30~180：
+    /// `#1─2s─#2─4s─#3─8s─#4─16s─#5─轮间─▶` 第二又从 2 秒起。
+    #[test]
+    fn burst_resets_the_curve_every_round() {
+        let c = cfg(PaceMode::Burst);
+        // 轮内阶梯
+        assert_eq!(c.delay_after_with(1, 0.5), Duration::from_secs(2));
+        assert_eq!(c.delay_after_with(2, 0.5), Duration::from_secs(4));
+        assert_eq!(c.delay_after_with(3, 0.5), Duration::from_secs(8));
+        assert_eq!(c.delay_after_with(4, 0.5), Duration::from_secs(16));
+        // 第 5 次是本轮最后一次 → 走轮间随机（rand_unit=0 → 下限）
+        assert_eq!(c.delay_after_with(5, 0.0), Duration::from_secs(30));
+        // 第 6 次是新轮的第 1 次 → 曲线**重置**回 2 秒。这正是与 Backoff 的分岔：
+        // 同一次数下 Backoff 会给 30 秒（已封顶）。
+        assert_eq!(c.delay_after_with(6, 0.5), Duration::from_secs(2));
+        assert_eq!(c.delay_after_with(9, 0.5), Duration::from_secs(16));
+        assert_eq!(c.delay_after_with(10, 0.0), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn burst_round_gap_stays_inside_the_window() {
+        let c = cfg(PaceMode::Burst);
+        assert_eq!(c.delay_after_with(5, 0.0), Duration::from_secs(30));
+        assert_eq!(c.delay_after_with(5, 1.0), Duration::from_secs(180));
+        // 两端都取得到（用 round 而非截断，否则上限永远取不到），中间逐点核对。
+        assert_eq!(c.delay_after_with(5, 0.5), Duration::from_secs(105));
+        // 任意 rand_unit（含越界与 NaN）都落在 [min, max] 内，不 panic 也不失控。
+        for raw in [-1.0, 0.0, 0.001, 0.25, 0.999, 1.0, 2.0, f64::NAN] {
+            let secs = c.delay_after_with(5, raw).as_secs();
+            assert!((30..=180).contains(&secs), "rand_unit={raw} 给出 {secs}s");
+        }
+    }
+
+    #[test]
+    fn burst_with_one_attempt_per_round_is_all_round_gap() {
+        let mut c = cfg(PaceMode::Burst);
+        c.burst_attempts_per_round = 1; // 每次都算「本轮最后一次」→ 每轮都走随机
+        assert_eq!(c.delay_after_with(1, 0.0), Duration::from_secs(30));
+        assert_eq!(c.delay_after_with(2, 1.0), Duration::from_secs(180));
+        assert_eq!(c.delay_after_with(3, 0.5), Duration::from_secs(105));
+    }
+
+    #[test]
+    fn burst_clamps_degenerate_round_size_and_gap_order() {
+        // 每轮 0 次会被夹成 1 次：否则 `(attempt-1) % 0` 直接除零 panic
+        let mut c = cfg(PaceMode::Burst);
+        c.burst_attempts_per_round = 0;
+        assert_eq!(c.delay_after_with(1, 0.0), Duration::from_secs(30));
+        assert_eq!(c.delay_after_with(7, 0.0), Duration::from_secs(30));
+
+        // 轮间上下限倒置（命令层会拒，但手改配置也得有确定行为）→ 一律按下限
+        let mut d = cfg(PaceMode::Burst);
+        d.burst_round_gap_min_secs = 180;
+        d.burst_round_gap_max_secs = 30;
+        assert_eq!(d.delay_after_with(5, 0.0), Duration::from_secs(180));
+        assert_eq!(d.delay_after_with(5, 1.0), Duration::from_secs(180));
+    }
+
+    /// 抖动用随机数只需「不重复 + 落在 [0,1)」：连打 200 次核对。
+    ///
+    /// 它**不是**密码学随机（见 `rand_unit_from_system` 的注释），这里也不检验统计
+    /// 分布——那需要大样本，而本函数存在的唯一理由是让轮间节奏不像固定表。
+    #[test]
+    fn rand_unit_is_in_unit_interval_and_not_constant() {
+        let samples: Vec<f64> = (0..200).map(|_| rand_unit_from_system()).collect();
+        assert!(
+            samples.iter().all(|v| (0.0..1.0).contains(v)),
+            "必须落在 [0,1)"
+        );
+        let distinct: std::collections::HashSet<u64> =
+            samples.iter().map(|v| (v * 1e6) as u64).collect();
+        assert!(
+            distinct.len() > 10,
+            "200 次里只有 {} 个不同取值 → 种子没在推进",
+            distinct.len()
+        );
     }
 
     #[test]

@@ -10,8 +10,15 @@ import { invoke } from "@tauri-apps/api/core";
  * 不回读当前供应商、不跟随接管开关。代价是期间轮换密钥会让重放持续 401 并立即停止。
  */
 
-/** 节奏模式，对应后端 `PaceMode`（serde snake_case）。 */
-export type PaceMode = "fixed" | "backoff";
+/**
+ * 节奏模式，对应后端 `PaceMode`（serde snake_case）。
+ *
+ * - `fixed`：固定间隔
+ * - `backoff`：一条从起始秒指数增长、到封顶后**永远按封顶等**的退避链
+ * - `burst`：仿 Codex CLI 的两级节奏——一轮内连打 N 次（轮内用与 `backoff` 同一条
+ *   指数曲线，但**每轮重置**回起始秒），轮与轮之间是 [min,max] 内的随机间隔。
+ */
+export type PaceMode = "fixed" | "backoff" | "burst";
 
 /** 任务状态，对应后端 `ReplayState`。 */
 export type ReplayState =
@@ -42,6 +49,12 @@ export interface ReplayConfigInput {
   /** 百分比整数（200 = ×2） */
   backoffMultPercent: string;
   backoffCapSecs: string;
+  /** 一轮里连打几次（burst） */
+  burstAttemptsPerRound: string;
+  /** 轮间随机间隔下限秒（burst） */
+  burstRoundGapMinSecs: string;
+  /** 轮间随机间隔上限秒（burst，需 ≥ min） */
+  burstRoundGapMaxSecs: string;
   requiredConsecutive: string;
   /** 逗号分隔状态码，如 `"500"` 或 `"500, 529"` */
   retryableStatuses: string;
@@ -64,13 +77,20 @@ export interface ReplayStatus {
   elapsedMs: number;
 }
 
-/** 默认配置：固定 3 秒、连续成功 1 次即停、仅 500 可重试、500 次 / 60 分钟封顶。 */
+/** 默认配置：固定 3 秒、连续成功 1 次即停、仅 500 可重试、500 次 / 60 分钟封顶。
+ *
+ * burst 三件套即使在 fixed 模式下也带着默认值：后端**不分模式**一律校验区间，缺字段
+ * 会让 `start_replay` 直接反序列化失败（前端这里的默认值就是契约的另一半）。
+ */
 export const DEFAULT_REPLAY_CONFIG: ReplayConfigInput = {
   mode: "fixed",
   intervalSecs: "3",
   backoffStartSecs: "2",
   backoffMultPercent: "200",
   backoffCapSecs: "30",
+  burstAttemptsPerRound: "5",
+  burstRoundGapMinSecs: "30",
+  burstRoundGapMaxSecs: "180",
   requiredConsecutive: "1",
   retryableStatuses: "500",
   maxAttempts: "500",
