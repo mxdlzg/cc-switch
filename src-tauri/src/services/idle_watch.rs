@@ -526,13 +526,13 @@ mod tests {
     #[test]
     fn always_catches_up_at_most_one_per_tick() {
         let r = rule(IdleWatchMode::Always, 60, 0);
-        // 静默 2.5 个阈值却一次没提醒过（如重启后）：只提醒一条，计数直接跳到
-        // 当前刻度 2，不追补两条。
+        // 静默 2.5 个阈值（9000s）却一次没提醒过（如重启后）：只提醒一条，计数直接
+        // 跳到当前刻度 2，不追补两条。（5400s 只是 1.5 个刻度、due=1，撑不起这个断言。）
         assert!(matches!(
-            decide(&r, 5400, 0),
+            decide(&r, 9000, 0),
             Decision::Fire { fired_count: 2 }
         ));
-        assert_eq!(decide(&r, 5400, 2), Decision::Waiting);
+        assert_eq!(decide(&r, 9000, 2), Decision::Waiting);
     }
 
     #[test]

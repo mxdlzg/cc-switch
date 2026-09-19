@@ -136,7 +136,7 @@ impl Database {
         let sql = format!(
             "SELECT {folded} AS app_type,
                     l.provider_id AS provider_id,
-                    MAX({pname}) AS provider_name,
+                    {pname} AS provider_name,
                     MAX(CASE WHEN l.status_code BETWEEN 200 AND 299 THEN l.created_at END) AS last_success_at,
                     SUM(CASE WHEN l.status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS success_count,
                     COUNT(*) AS request_count
@@ -187,11 +187,14 @@ fn folded_app_type_sql(column: &str) -> String {
 /// SQL **聚合**表达式：供应商展示名。providers 查不到时（已删供应商 / 历史残留日志行）
 /// 回落到 provider_id。会话伪供应商已被 WHERE 排除，故不需要它们的可读名。
 ///
-/// 写成 `COALESCE(MAX(p.name), MAX(l.provider_id))` 而不是 `MAX(COALESCE(...))`：
+/// 写成 `COALESCE(MAX(name), MAX(provider_id))` 而不是 `MAX(COALESCE(...))`：
 /// 折叠后的分组里可能**同时**有 joined 与未 joined 的行（`claude` 有 providers 行、
 /// `claude-desktop` 没有），后者会把 provider_id 喂进同一个聚合，而 `MAX` 是按字符串
 /// 比的——小写 id 排在大写名称前面，于是名字会被 id 顶掉。`MAX` 忽略 NULL，所以先取
 /// 「组内任意一个名字」，一个都没有才回落 id。
+///
+/// ⚠️ 返回值**已经是聚合表达式**，调用方直接写进 SELECT，别再套一层 `MAX(...)`——
+/// 嵌套聚合会被 SQLite 拒绝（`misuse of aggregate function MAX()`）。
 fn provider_name_sql(log_alias: &str, provider_alias: &str) -> String {
     format!("COALESCE(MAX({provider_alias}.name), MAX({log_alias}.provider_id))")
 }
