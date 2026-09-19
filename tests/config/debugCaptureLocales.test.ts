@@ -20,6 +20,23 @@ const requiredKeys = [
   "settings.advanced.debugCapture.kind.request",
   "settings.advanced.debugCapture.kind.response",
   "settings.advanced.debugCapture.kind.error",
+  // 流式那一条的存在感全靠这两个 key：kind 标签 + 「正文不捕获」的说明。
+  // 少了 hint，用户看到的就是一块空白 + 「无响应」的旧误会。
+  "settings.advanced.debugCapture.kind.stream_response",
+  "settings.advanced.debugCapture.stream.title",
+  "settings.advanced.debugCapture.stream.hint",
+  "settings.advanced.debugCapture.stream.chunks",
+  "settings.advanced.debugCapture.stream.elapsed",
+  "settings.advanced.debugCapture.stream.chunksLabel",
+  "settings.advanced.debugCapture.stream.bytesLabel",
+  "settings.advanced.debugCapture.stream.outcomeLabel",
+  "settings.advanced.debugCapture.stream.running",
+  // 收尾方式是拼进字符串的 key 路径（stream.outcome.<枚举>），缺一个就露出裸路径
+  "settings.advanced.debugCapture.stream.outcome.completed",
+  "settings.advanced.debugCapture.stream.outcome.first_byte_timeout",
+  "settings.advanced.debugCapture.stream.outcome.idle_timeout",
+  "settings.advanced.debugCapture.stream.outcome.upstream_error",
+  "settings.advanced.debugCapture.stream.outcome.aborted",
 ] as const;
 
 type TranslationTree = Record<string, unknown>;

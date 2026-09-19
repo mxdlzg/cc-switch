@@ -758,12 +758,17 @@ async fn handle_claude_transform(
         // 获取流式超时配置
         let timeout_config = ctx.streaming_timeout_config();
 
+        // 流式也要记一条（raw_upstream=false：这是代理重建的 Anthropic 事件流，
+        // 不是上游原文）。关闭抓取时 begin() 返回 None，热路径无开销。
+        let stream_capture = ctx.stream_capture_seed(status.as_u16(), false).begin();
+
         let logged_stream = create_logged_passthrough_stream(
             sse_stream,
             "Claude/OpenRouter",
             usage_collector,
             timeout_config,
             connection_guard,
+            stream_capture,
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -1588,12 +1593,15 @@ async fn handle_codex_xai_native_responses_rewrite(
             );
         let usage_collector =
             create_usage_collector(ctx, state, status.as_u16(), &CODEX_PARSER_CONFIG);
+        // 名称还原改写了事件体，故 raw_upstream=false。
+        let stream_capture = ctx.stream_capture_seed(status.as_u16(), false).begin();
         let logged_stream = create_logged_passthrough_stream(
             restore_stream,
             ctx.tag,
             usage_collector,
             ctx.streaming_timeout_config(),
             connection_guard,
+            stream_capture,
         );
 
         let body = axum::body::Body::from_stream(logged_stream);
@@ -1784,12 +1792,15 @@ async fn handle_codex_chat_to_responses_transform(
             None
         };
 
+        // Responses 事件流由代理生成，raw_upstream=false。
+        let stream_capture = ctx.stream_capture_seed(status.as_u16(), false).begin();
         let logged_stream = create_logged_passthrough_stream(
             sse_stream,
             ctx.tag,
             usage_collector,
             ctx.streaming_timeout_config(),
             connection_guard,
+            stream_capture,
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -2157,12 +2168,16 @@ fn build_codex_anthropic_sse_response(
         None
     };
 
+    // 两个调用方（Anthropic→Responses 的流式转换）共用本函数，事件流都由代理生成，
+    // 故 raw_upstream=false。
+    let stream_capture = ctx.stream_capture_seed(status.as_u16(), false).begin();
     let logged_stream = create_logged_passthrough_stream(
         sse_stream,
         ctx.tag,
         usage_collector,
         ctx.streaming_timeout_config(),
         connection_guard,
+        stream_capture,
     );
 
     let mut headers = axum::http::HeaderMap::new();

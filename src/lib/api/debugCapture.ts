@@ -12,13 +12,37 @@ import { invoke } from "@tauri-apps/api/core";
  *
  * `replay_response` 由重放器写入：那份响应客户端从未收到（没人在等它），存进来是
  * 给用户回来点开看的。
+ *
+ * `stream_response` 是流式（SSE）响应的**元信息**：上游回 200 + `text/event-stream`
+ * 那一刻我们就已经知道「响应到了」，所以必须有这一条（否则那一轮看起来像没响应），
+ * 但**正文刻意不抓**（SSE 体积大且非 debug 目标）。
  */
 export type CaptureKind =
   | "client_request"
   | "request"
   | "response"
   | "error"
-  | "replay_response";
+  | "replay_response"
+  | "stream_response";
+
+/** 流式响应的收尾方式，对应后端 `StreamOutcome`。 */
+export type StreamOutcome =
+  | "completed"
+  | "first_byte_timeout"
+  | "idle_timeout"
+  | "upstream_error"
+  | "aborted";
+
+/** 流式响应的统计，对应后端 `StreamStats`（camelCase）。 */
+export interface StreamStats {
+  /** 透传给客户端的块数 */
+  chunks: number;
+  /** 累计字节数 */
+  bytes: number;
+  /** 从流开始到收尾的耗时（毫秒） */
+  elapsedMs: number;
+  outcome: StreamOutcome;
+}
 
 /** 一条捕获记录，字段对应后端 `CaptureEvent`（camelCase）。 */
 export interface CaptureEvent {
@@ -39,14 +63,21 @@ export interface CaptureEvent {
   appType: string;
   providerId: string;
   model: string;
-  /** 非流式响应 / 错误体的 HTTP 状态；请求条目为 null */
+  /** 响应类条目的 HTTP 状态（含流式：200 + text/event-stream）；请求条目为 null */
   status: number | null;
-  /** 仅对 response 有意义：true = 透传路径的上游原文；false = 格式转换后的响应 */
+  /** 仅对响应类条目有意义：true = 透传路径的上游原文；false = 格式转换后的响应 */
   rawUpstream: boolean;
-  /** body 原文（JSON 尽量美化；后端截断到 200k 字符） */
+  /** body 原文（JSON 尽量美化；后端截断到 200k 字符）。流式条目恒为空串 */
   body: string;
   /** body 是否被后端截断 */
   truncated: boolean;
+  /**
+   * 仅流式条目（`kind === "stream_response"`）有意义：块数/字节数/耗时/结局。
+   *
+   * 后端 `skip_serializing_if` 省略 None，所以**字段可能整个缺席**。流开始时的条目
+   * 先落库、流结束时按 seq 就地回填这里的统计；没回填说明流还在跑（或已被挤掉）。
+   */
+  stream?: StreamStats;
 }
 
 export const debugCaptureApi = {

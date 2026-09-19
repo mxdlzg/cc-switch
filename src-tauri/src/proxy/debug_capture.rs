@@ -11,8 +11,9 @@
 //!   日志文件都无关。
 //! - **单具身捕获有字节上限**：单个 body 截断到 [`MAX_BODY_CHARS`]，缓冲总量由
 //!   条数上限 [`CAPTURE_CAP`] 兜底。
-//! - **流式响应不在这里捕获**：SSE 走透传、体积极大且非本次 debug 目标，
-//!   仅捕获「请求 + 非流式响应 + 错误体」。
+//! - **流式响应的正文不捕获**：SSE 走透传、体积极大且非本次 debug 目标。但**流本身
+//!   要记一条** [`CaptureKind::StreamResponse`]：上游回 200 + `text/event-stream` 那一刻
+//!   我们确实知道「响应到了」，不记就会让整轮看起来「无响应」——那是错的，只是没正文。
 //!
 //! 关联键：`turn_id` 标记**一次入站 HTTP 请求**，同一轮内的入站/出站/响应/错误
 //! 事件共享它，前端据此配对成「一轮问答」。`session_id` 是**整段对话**（客户端带的
@@ -51,8 +52,20 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 /// 消费者任务只启动一次（首次在有 tokio 运行时的捕获点启动）。
 static CONSUMER_STARTED: OnceLock<()> = OnceLock::new();
 
+/// 投递通道里的消息。**刻意不是裸 `CaptureEvent`**：流式条目要「先落一条、结束时
+/// 回填统计」，两条消息走同一条 FIFO 才能保证回填不会跑在插入前面（否则短流的统计
+/// 会丢，行里只剩一条「流式、无统计」）。
+enum CaptureMsg {
+    Push(CaptureEvent),
+    /// 按 seq 就地回填流式统计。找不到（已被环形缓冲挤出）就静默跳过。
+    FinishStream {
+        seq: u64,
+        stats: StreamStats,
+    },
+}
+
 /// 投递侧发送端；消费者任务取出后独占接收端。
-static TX: OnceLock<mpsc::Sender<CaptureEvent>> = OnceLock::new();
+static TX: OnceLock<mpsc::Sender<CaptureMsg>> = OnceLock::new();
 
 /// 环形缓冲（读端快照 + 写端 push/pop 共用一把锁；捕获是低频操作，无争用压力）。
 static BUFFER: OnceLock<Mutex<VecDeque<CaptureEvent>>> = OnceLock::new();
@@ -93,6 +106,10 @@ pub enum CaptureKind {
     Error,
     /// 重放器成功（或终态）时拿到的响应体——客户端从未收到它，故存进查看器供回看
     ReplayResponse,
+    /// 流式（SSE）响应的元信息：状态码 + 块数/字节数/耗时 + 结局。
+    /// **刻意没有正文**（SSE 体积大且非 debug 目标），但必须有这一条——上游已经回了
+    /// 200，说这轮「无响应」是错的。
+    StreamResponse,
 }
 
 /// 一次出站请求的**完整四元组**快照，重放器据此原样重发。
@@ -145,6 +162,43 @@ pub struct CaptureEvent {
     pub body: String,
     /// body 是否被截断
     pub truncated: bool,
+    /// 仅对流式条目有意义：块数 / 字节数 / 耗时 / 结局。
+    ///
+    /// 流开始那一刻先落一条 `stream=None` 的条目（状态码此刻已知，行首就能显示 200），
+    /// 流结束时由 [`StreamCaptureHandle::finish`] 按 seq **就地回填**。非流式条目恒为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<StreamStats>,
+}
+
+/// 流式响应的统计。正文刻意不存（SSE 体积大、非 debug 目标），但这几项能说明
+/// 「响应确实到了、传了多久、怎么收的尾」。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamStats {
+    /// 透传给客户端的块数
+    pub chunks: u64,
+    /// 累计字节数
+    pub bytes: u64,
+    /// 从流开始到收尾的耗时（毫秒）
+    pub elapsed_ms: u64,
+    /// 收尾方式
+    pub outcome: StreamOutcome,
+}
+
+/// 流式响应的收尾方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamOutcome {
+    /// 上游正常结束流
+    Completed,
+    /// 首字节超时（故障转移开启时才配了超时）
+    FirstByteTimeout,
+    /// 静默期超时（流中间卡住）
+    IdleTimeout,
+    /// 流里读到传输错误
+    UpstreamError,
+    /// 客户端断开 / 上层提前丢弃，流被 drop
+    Aborted,
 }
 
 fn now_ms() -> i64 {
@@ -194,6 +248,18 @@ fn buffer_push(event: CaptureEvent) {
     }
 }
 
+/// 按 seq 就地回填流式统计。找不到就静默跳过（条目已被环形缓冲挤掉，或压根没入库）。
+fn buffer_finish_stream(seq: u64, stats: StreamStats) {
+    let buf = buffer();
+    let mut guard = match buf.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(event) = guard.iter_mut().find(|e| e.seq == seq) {
+        event.stream = Some(stats);
+    }
+}
+
 /// 首次捕获时惰性拉起消费者任务。
 ///
 /// 仅在**已有 tokio 运行时**时启动（生产路径：forwarder/response_processor 都跑在
@@ -204,12 +270,15 @@ fn ensure_consumer() -> bool {
         return false;
     }
     CONSUMER_STARTED.get_or_init(|| {
-        let (tx, mut rx) = mpsc::channel::<CaptureEvent>(QUEUE_CAPACITY);
+        let (tx, mut rx) = mpsc::channel::<CaptureMsg>(QUEUE_CAPACITY);
         // 发送端存入全局，供 record_* 使用。
         let _ = TX.set(tx);
         tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                buffer_push(event);
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    CaptureMsg::Push(event) => buffer_push(event),
+                    CaptureMsg::FinishStream { seq, stats } => buffer_finish_stream(seq, stats),
+                }
             }
         });
     });
@@ -330,6 +399,7 @@ fn push(
     status: Option<u16>,
     raw_upstream: bool,
     body: String,
+    stream: Option<StreamStats>,
 ) -> Option<u64> {
     // 快速路径：关闭时零成本返回。
     if !is_enabled() {
@@ -350,13 +420,14 @@ fn push(
         raw_upstream,
         body,
         truncated,
+        stream,
     };
 
     // 消费者就绪 → try_send：队列满时直接丢本次捕获，绝不阻塞转发主流程。
     // 无 tokio 运行时（如单元测试）→ 直写缓冲，保持语义一致。
     if ensure_consumer() {
         let tx = TX.get()?;
-        if let Err(e) = tx.try_send(event) {
+        if let Err(e) = tx.try_send(CaptureMsg::Push(event)) {
             log::debug!("[DebugCapture] 丢弃一条捕获（队列饱和）: {e}");
             return None;
         }
@@ -394,6 +465,7 @@ pub fn record_client_request(
         None,
         false,
         pretty_json(original_body),
+        None,
     );
 }
 
@@ -421,6 +493,7 @@ pub fn record_request(
         None,
         false,
         pretty_json(filtered_body),
+        None,
     )
 }
 
@@ -456,6 +529,7 @@ pub fn record_response(
         Some(status),
         raw_upstream,
         body,
+        None,
     );
 }
 
@@ -487,7 +561,122 @@ pub fn record_error(
         Some(status),
         false,
         body,
+        None,
     );
+}
+
+/// 一条流式响应的**起始**信息，在透传流建好、即将回给客户端时构造
+/// （见 `RequestContext::stream_capture_seed`）。
+///
+/// 状态码、渠道、模型此刻都已确定，所以先落一条条目；正文一个字节都不存
+/// （SSE 体积大且非本次 debug 目标），流结束时由 [`StreamCaptureHandle::finish`]
+/// 回填块数/字节数/耗时/结局。
+#[derive(Debug, Clone)]
+pub struct StreamCaptureSeed {
+    pub turn_id: u64,
+    pub session_id: String,
+    pub app_type: String,
+    pub provider_id: String,
+    pub model: String,
+    pub status: u16,
+    /// true = 上游 SSE 原样透传；false = 代理重建/改写过的事件流（与 `raw_upstream`
+    /// 同语义，供前端标注「上游原文 / 转换后响应」）。
+    pub raw_upstream: bool,
+}
+
+/// 流式观测句柄：计数 + 收尾。**抓取关闭或队列饱和时拿不到它**，于是透传热路径
+/// 上的计数与收尾开销整体归零（调用方只看一个 `Option` 分支）。
+#[derive(Debug)]
+pub struct StreamCaptureHandle {
+    seq: u64,
+    // 直接持有原子计数，不用 Arc：句柄被透传流独占（&mut 进、finish 消费 self），
+    // 没有跨任务共享需求。
+    chunks: AtomicU64,
+    bytes: AtomicU64,
+    started: std::time::Instant,
+    /// 已收尾标记：`finish` 置真，避免 Drop 再报一次 `Aborted`。
+    finished: bool,
+}
+
+impl StreamCaptureSeed {
+    /// 落一条流式条目并返回观测句柄。
+    pub fn begin(self) -> Option<StreamCaptureHandle> {
+        let seq = push(
+            CaptureKind::StreamResponse,
+            self.turn_id,
+            &self.session_id,
+            &self.app_type,
+            &self.provider_id,
+            &self.model,
+            Some(self.status),
+            self.raw_upstream,
+            // 刻意空 body：正文不抓；前端按 kind 说明「流式响应无正文」。
+            String::new(),
+            None,
+        )?;
+        Some(StreamCaptureHandle {
+            seq,
+            chunks: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            started: std::time::Instant::now(),
+            finished: false,
+        })
+    }
+}
+
+impl StreamCaptureHandle {
+    /// 记一块透传字节。每块两次原子自增，相对网络 I/O 可忽略，且只在抓取开启时发生。
+    pub fn count(&self, n: usize) {
+        self.chunks.fetch_add(1, Ordering::Relaxed);
+        self.bytes.fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    fn stats(&self, outcome: StreamOutcome) -> StreamStats {
+        StreamStats {
+            chunks: self.chunks.load(Ordering::Relaxed),
+            bytes: self.bytes.load(Ordering::Relaxed),
+            elapsed_ms: self.started.elapsed().as_millis() as u64,
+            outcome,
+        }
+    }
+
+    /// 收尾并回填统计。走同一条 FIFO，所以回填一定排在插入后面。
+    pub fn finish(mut self, outcome: StreamOutcome) {
+        let stats = self.stats(outcome);
+        self.finished = true;
+        if ensure_consumer() {
+            let Some(tx) = TX.get() else { return };
+            if let Err(e) = tx.try_send(CaptureMsg::FinishStream {
+                seq: self.seq,
+                stats,
+            }) {
+                log::debug!("[DebugCapture] 丢弃一条流式统计（队列饱和）: {e}");
+            }
+        } else {
+            buffer_finish_stream(self.seq, stats);
+        }
+    }
+}
+
+impl Drop for StreamCaptureHandle {
+    /// 没走到 `finish` 就是被提前丢弃：客户端断开、上层提前 drop 整条响应等。
+    /// 必须补一条 `Aborted`，否则那一轮会永远停在「流式，没有统计」——与它本该
+    /// 修掉的「无响应」一样误导人。
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let stats = self.stats(StreamOutcome::Aborted);
+        if ensure_consumer() {
+            let Some(tx) = TX.get() else { return };
+            let _ = tx.try_send(CaptureMsg::FinishStream {
+                seq: self.seq,
+                stats,
+            });
+        } else {
+            buffer_finish_stream(self.seq, stats);
+        }
+    }
 }
 
 /// 捕获重放器拿到的响应体。重放的响应**客户端从未收到**（没有人在等它），
@@ -529,6 +718,7 @@ pub fn record_replay_response(
         raw_upstream: true,
         body,
         truncated,
+        stream: None,
     });
 }
 
@@ -640,6 +830,88 @@ mod tests {
         assert!(out.contains("truncated at"));
     }
 
+    fn seed(status: u16) -> StreamCaptureSeed {
+        StreamCaptureSeed {
+            turn_id: next_turn_id(),
+            session_id: "s-stream".into(),
+            app_type: "claude".into(),
+            provider_id: "prov".into(),
+            model: "claude-sonnet-5".into(),
+            status,
+            raw_upstream: true,
+        }
+    }
+
+    #[test]
+    fn stream_entry_exists_at_once_and_gets_stats_back_filled() {
+        with_isolated_buffer(|| {
+            set_enabled(true);
+            let handle = seed(200).begin().expect("开启态应拿到流式句柄");
+            // 流**开始**时条目就得在缓冲里（状态码此刻已知）——否则那一轮看起来像
+            // 「无响应」，正是这次改动要修掉的误读。此刻还没有统计。
+            let snap = snapshot();
+            let ev = snap
+                .iter()
+                .find(|e| e.kind == CaptureKind::StreamResponse)
+                .expect("流开始时就应有一条条目");
+            assert_eq!(ev.status, Some(200));
+            assert!(ev.raw_upstream);
+            assert!(ev.body.is_empty(), "正文刻意不抓");
+            assert!(ev.stream.is_none(), "此刻还没收尾，不能假装有统计");
+
+            handle.count(1_000);
+            handle.count(500);
+            handle.finish(StreamOutcome::Completed);
+
+            let snap = snapshot();
+            let ev = snap
+                .iter()
+                .find(|e| e.kind == CaptureKind::StreamResponse)
+                .unwrap();
+            let stats = ev.stream.clone().expect("收尾后必须有统计");
+            assert_eq!(stats.chunks, 2);
+            assert_eq!(stats.bytes, 1_500);
+            assert_eq!(stats.outcome, StreamOutcome::Completed);
+            // 回填是**就地**改同一条目，不是又插一条（插第二条会让本轮出现两个响应）。
+            assert_eq!(
+                snap.iter()
+                    .filter(|e| e.kind == CaptureKind::StreamResponse)
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn dropped_stream_handle_reports_aborted() {
+        with_isolated_buffer(|| {
+            set_enabled(true);
+            // 客户端断开 / 上层提前 drop 整条响应：没走到 finish，也必须留下收尾说明，
+            // 否则那一轮永远停在「流式，没有统计」。
+            let handle = seed(200).begin().unwrap();
+            handle.count(10);
+            drop(handle);
+
+            let snap = snapshot();
+            let ev = snap
+                .iter()
+                .find(|e| e.kind == CaptureKind::StreamResponse)
+                .unwrap();
+            let stats = ev.stream.clone().expect("Drop 也要回填统计");
+            assert_eq!(stats.outcome, StreamOutcome::Aborted);
+            assert_eq!(stats.chunks, 1);
+        });
+    }
+
+    #[test]
+    fn disabled_stream_capture_yields_no_handle() {
+        with_isolated_buffer(|| {
+            set_enabled(false);
+            assert!(seed(200).begin().is_none(), "关闭态不该有句柄");
+            assert!(snapshot().is_empty());
+        });
+    }
+
     #[test]
     fn cap_evicts_oldest() {
         with_isolated_buffer(|| {
@@ -657,6 +929,7 @@ mod tests {
                     raw_upstream: false,
                     body: String::new(),
                     truncated: false,
+                    stream: None,
                 });
             }
             let snap = snapshot();

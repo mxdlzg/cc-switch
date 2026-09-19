@@ -131,4 +131,80 @@ describe("buildTurns", () => {
     ]);
     expect(turns.map((t) => t.turnId)).toEqual([11, 12, 13]);
   });
+
+  // ── 流式（SSE）────────────────────────────────────────────────────────────
+  // 用户明确要求过：流式可以不显示正文，但不能写成「无响应」——响应到达我们是知道的。
+  // 下面三条钉住的就是这一点：流式条目算终态、算成功，并把状态码带出来。
+
+  it("treats a 2xx stream entry as a terminal success (never 'no response')", () => {
+    const [turn] = buildTurns([
+      ev(20, "client_request"),
+      ev(20, "request"),
+      ev(20, "stream_response", {
+        status: 200,
+        body: "",
+        rawUpstream: true,
+        stream: {
+          chunks: 48,
+          bytes: 23_600,
+          elapsedMs: 1200,
+          outcome: "completed",
+        },
+      }),
+    ]);
+    expect(turn.hasTerminal).toBe(true);
+    expect(turn.succeeded).toBe(true);
+    expect(turn.errored).toBe(false);
+    expect(turn.shownStatus).toBe(200);
+    expect(turn.terminalKind).toBe("stream_response");
+    // 收尾统计跟着结局一起出去，行首才能写出「1.2s · 48 块 · 正常结束」。
+    expect(turn.terminalStream).toEqual({
+      chunks: 48,
+      bytes: 23_600,
+      elapsedMs: 1200,
+      outcome: "completed",
+    });
+  });
+
+  it("keeps a stream entry with no stats yet as in-progress (not fake numbers)", () => {
+    // 后端在流开始时先落条目、结束时才回填 stream；轮询正好撞在中间时不能假装有数据。
+    const [turn] = buildTurns([
+      ev(21, "request"),
+      ev(21, "stream_response", { status: 200, body: "" }),
+    ]);
+    expect(turn.succeeded).toBe(true);
+    expect(turn.terminalKind).toBe("stream_response");
+    expect(turn.terminalStream).toBe(null);
+  });
+
+  it("counts a non-2xx stream as a failed attempt, not a success", () => {
+    // 上游用 SSE 回错误（少见但存在）：状态码非 2xx 就不能算成功那一击。
+    const [turn] = buildTurns([
+      ev(22, "request"),
+      ev(22, "stream_response", { status: 500, body: "" }),
+    ]);
+    expect(turn.succeeded).toBe(false);
+    expect(turn.errored).toBe(true);
+    expect(turn.failedAttempts).toBe(1);
+    expect(turn.shownStatus).toBe(500);
+    expect(turn.terminalKind).toBe("stream_response");
+  });
+
+  it("still counts a stream rescued by failover as one successful turn", () => {
+    const [turn] = buildTurns([
+      ev(23, "request", { providerId: "prov-a" }),
+      ev(23, "error", { providerId: "prov-a", status: 429 }),
+      ev(23, "request", { providerId: "prov-b" }),
+      ev(23, "stream_response", {
+        providerId: "prov-b",
+        status: 200,
+        body: "",
+      }),
+    ]);
+    expect(turn.succeeded).toBe(true);
+    expect(turn.errored).toBe(false);
+    expect(turn.failedAttempts).toBe(1);
+    expect(turn.shownStatus).toBe(200);
+    expect(turn.providerIds).toEqual(["prov-a", "prov-b"]);
+  });
 });

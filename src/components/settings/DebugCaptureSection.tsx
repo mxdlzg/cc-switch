@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { toast } from "sonner";
 import { History } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -24,7 +25,11 @@ import { APP_IDS } from "@/config/appConfig";
 import { providersApi } from "@/lib/api/providers";
 import { useQuery } from "@tanstack/react-query";
 import type { AppId } from "@/lib/api/types";
-import type { CaptureEvent, CaptureKind } from "@/lib/api/debugCapture";
+import type {
+  CaptureEvent,
+  CaptureKind,
+  StreamStats,
+} from "@/lib/api/debugCapture";
 import {
   useClearDebugCapture,
   useDebugCaptureEnabled,
@@ -42,6 +47,8 @@ const KIND_CLASS: Record<CaptureKind, string> = {
   response: "bg-green-500/15 text-green-700 dark:text-green-400",
   error: "bg-red-500/15 text-red-600 dark:text-red-400",
   replay_response: "bg-teal-500/15 text-teal-700 dark:text-teal-400",
+  // 流式响应：算成功，但和「有正文的响应」区分开，故另用一档青色。
+  stream_response: "bg-cyan-500/15 text-cyan-700 dark:text-cyan-400",
 };
 
 /**
@@ -64,7 +71,7 @@ export interface Turn {
   /** 本轮出现过的供应商（按首次出现顺序）；故障转移跨供应商时长度 > 1 */
   providerIds: string[];
   model: string;
-  /** 本轮最终成功（有 response / replay_response 条目） */
+  /** 本轮最终成功（有 response / replay_response / 2xx 流式条目） */
   succeeded: boolean;
   /** 本轮以失败收尾：有 error 且本轮没有任何成功条目——故障转移救回的一轮不算失败 */
   errored: boolean;
@@ -72,20 +79,53 @@ export interface Turn {
   shownStatus: number | null;
   /** 本轮内部的失败条目数（故障转移/整流的每一击各一条）；成功时也要显示 */
   failedAttempts: number;
-  /** 有终态事件（response / error / replay_response） */
+  /** 有终态事件（response / error / replay_response / stream_response） */
   hasTerminal: boolean;
   /** 结局那一步的 kind（故障转移救回=replay/response，纯失败=error）；未定局=null */
   terminalKind: CaptureKind | null;
+  /**
+   * 结局是流式条目时的收尾统计（块数/字节/耗时/怎么收尾）；其它结局=null。
+   *
+   * `terminalKind === "stream_response"` 而这里是 null，说明流还在跑、后端尚未回填。
+   */
+  terminalStream: StreamStats | null;
   /** 可重放的出站请求条目 seq（没有出站请求条目则为 null） */
   replayableSeq: number | null;
 }
 
-/** 终态条目：response / error / replay_response（客户端能拿到的结果）。 */
+/** 终态条目：客户端能拿到的结果——非流式响应、错误体、重放响应、流式响应。
+ *
+ * 流式条目必须是终态：上游回 200 + `text/event-stream` 时这一轮已经定局（响应到了，
+ * 只是正文不抓）。把它排除在外，正是「流式那一轮显示成无响应」的根源。
+ */
 function isTerminal(ev: CaptureEvent): boolean {
   return (
     ev.kind === "response" ||
     ev.kind === "error" ||
-    ev.kind === "replay_response"
+    ev.kind === "replay_response" ||
+    ev.kind === "stream_response"
+  );
+}
+
+/** 流式条目也带状态码；非 2xx 的流（少见）算失败那一击，不算成功。 */
+function isStreamSuccess(ev: CaptureEvent): boolean {
+  return ev.status !== null && ev.status >= 200 && ev.status < 300;
+}
+
+/** 本轮的「成功条目」：非流式响应、重放响应、2xx 流式响应。 */
+export function isSuccessEntry(ev: CaptureEvent): boolean {
+  return (
+    ev.kind === "response" ||
+    ev.kind === "replay_response" ||
+    (ev.kind === "stream_response" && isStreamSuccess(ev))
+  );
+}
+
+/** 本轮的「失败条目」：错误体，或非 2xx 的流式响应。每一击都算一次尝试。 */
+export function isFailureEntry(ev: CaptureEvent): boolean {
+  return (
+    ev.kind === "error" ||
+    (ev.kind === "stream_response" && !isStreamSuccess(ev))
   );
 }
 
@@ -107,6 +147,7 @@ export function buildTurns(events: CaptureEvent[]): Turn[] {
         failedAttempts: 0,
         hasTerminal: false,
         terminalKind: null,
+        terminalStream: null,
         replayableSeq: null,
       };
       byTurn.set(ev.turnId, turn);
@@ -130,10 +171,8 @@ export function buildTurns(events: CaptureEvent[]): Turn[] {
   // 结局要按时间看完全部事件才能定：故障转移的一轮常是「error(429) → response(200)」，
   // 只要出现过成功条目，这一轮就是成功的（后面的成功盖掉前面的失败）。
   for (const turn of byTurn.values()) {
-    const successes = turn.events.filter(
-      (e) => e.kind === "response" || e.kind === "replay_response",
-    );
-    const errors = turn.events.filter((e) => e.kind === "error");
+    const successes = turn.events.filter(isSuccessEntry);
+    const errors = turn.events.filter(isFailureEntry);
     turn.succeeded = successes.length > 0;
     turn.failedAttempts = errors.length;
     turn.errored = !turn.succeeded && errors.length > 0;
@@ -141,6 +180,9 @@ export function buildTurns(events: CaptureEvent[]): Turn[] {
       successes[successes.length - 1] ?? errors[errors.length - 1];
     turn.terminalKind = outcome ? outcome.kind : null;
     turn.shownStatus = outcome?.status ?? null;
+    // 结局是流式时，收尾统计（块数/字节/耗时/怎么结束）跟着一起带出去：行首
+    // 状态码是 200 不代表流跑完了，卡住/被断开的痕迹只能靠 outcome 说明。
+    turn.terminalStream = outcome?.stream ?? null;
   }
   return [...byTurn.values()];
 }
@@ -163,6 +205,43 @@ function tabLabelOf(
 
 function channelKeyOf(ev: { appType: string; providerId: string }): string {
   return `${ev.appType}/${ev.providerId}`;
+}
+
+/**
+ * 流式收尾的一行摘要：`1.2s · 48 块 · 23.1 KB · 正常结束`（`counts:false` 时省掉
+ * 块数与字节，列表行放不下那么多字，详情标签页里才摊全）。
+ *
+ * 刻意把 outcome 翻成人话而不是裸枚举：用户要区分「流跑完了」和「卡住被超时掐了 /
+ * 客户端断了」，只看 200 是看不出来的。统计缺失（流还在跑）时只说进行中。
+ */
+function streamBrief(
+  stats: StreamStats | null,
+  t: TFunction,
+  opts: { counts?: boolean } = {},
+): string {
+  if (!stats)
+    return t("settings.advanced.debugCapture.stream.running", "流式进行中");
+  const parts = [`${(stats.elapsedMs / 1000).toFixed(1)}s`];
+  if (opts.counts !== false) {
+    parts.push(
+      t("settings.advanced.debugCapture.stream.chunks", {
+        n: stats.chunks,
+        defaultValue: `${stats.chunks} chunks`,
+      }),
+      formatBytes(stats.bytes),
+    );
+  }
+  parts.push(
+    t(`settings.advanced.debugCapture.stream.outcome.${stats.outcome}`),
+  );
+  return parts.join(" · ");
+}
+
+/** 与 BackupListSection 同口径的字节格式化（此处只需 KB/MB 两档常用量级）。 */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** 捕获事件里的 appType 是后端 `AppType::as_str()`，与前端 AppId 同字面量。 */
@@ -401,6 +480,13 @@ export function DebugCaptureSection() {
               </span>
             )}
             <span className="truncate font-medium">{turn.model || "—"}</span>
+            {/* 流式那一轮：状态码是 200 不代表流跑完了，把耗时/结局就地露出来。
+                统计没回填（流还在跑）时只说「进行中」，不假装有数据。 */}
+            {turn.terminalKind === "stream_response" && (
+              <span className="shrink-0 truncate font-mono text-muted-foreground">
+                {streamBrief(turn.terminalStream, t, { counts: false })}
+              </span>
+            )}
           </div>
           <div className="mt-1 flex items-center justify-between gap-2">
             <span className="truncate text-muted-foreground">
@@ -439,13 +525,15 @@ export function DebugCaptureSection() {
    */
   const renderDetail = (turn: Turn) => {
     // 默认落在**结局**那一条：成功看最后一条响应（故障转移时最后那次才是真结果），
-    // 失败看最后一条错误。用 findLast 语义（倒着找），不是本轮第一条。
+    // 失败看最后一条错误，流式那轮落在流式条目上（那里写着「正文不捕获」+ 统计）。
     const lastOf = (kind: CaptureKind) =>
       [...turn.events].reverse().find((e) => e.kind === kind);
     const defaultTab = turn.succeeded
-      ? (lastOf("response")?.seq ?? lastOf("replay_response")?.seq)
+      ? (lastOf("response")?.seq ??
+        lastOf("replay_response")?.seq ??
+        lastOf("stream_response")?.seq)
       : turn.errored
-        ? lastOf("error")?.seq
+        ? (lastOf("error")?.seq ?? lastOf("stream_response")?.seq)
         : undefined;
     const fallbackTab = turn.events[turn.events.length - 1].seq;
     // 同类事件的出现序号（供标签页打 #N）：一次换键 precompute，不在 map 里数。
@@ -518,7 +606,8 @@ export function DebugCaptureSection() {
                     {ev.status !== null && (
                       <span className="font-mono">{ev.status}</span>
                     )}
-                    {ev.kind === "response" && (
+                    {(ev.kind === "response" ||
+                      ev.kind === "stream_response") && (
                       <span>
                         {ev.rawUpstream
                           ? t(
@@ -534,6 +623,12 @@ export function DebugCaptureSection() {
                     {ev.kind === "replay_response" && (
                       <span>{t("replay.fromReplay")}</span>
                     )}
+                    {/* 流式条目：把收尾统计摊开。没回填就是流还在跑，直说进行中。 */}
+                    {ev.kind === "stream_response" && (
+                      <span className="font-mono">
+                        {streamBrief(ev.stream ?? null, t)}
+                      </span>
+                    )}
                     {ev.truncated && (
                       <span className="text-amber-600 dark:text-amber-500">
                         {t(
@@ -543,19 +638,74 @@ export function DebugCaptureSection() {
                       </span>
                     )}
                   </span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-6 shrink-0 px-2 text-[11px]"
-                    onClick={() => copyBody(ev.body)}
-                  >
-                    {t("common.copy")}
-                  </Button>
+                  {/* 流式条目没有正文，复制按钮无处发力，直接不给。 */}
+                  {ev.kind !== "stream_response" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 shrink-0 px-2 text-[11px]"
+                      onClick={() => copyBody(ev.body)}
+                    >
+                      {t("common.copy")}
+                    </Button>
+                  )}
                 </div>
-                {/* 弹窗内唯一的正文滚动区：不再叠 max-h，撑满右列即可。 */}
-                <pre className="mx-4 mb-4 flex-1 overflow-auto rounded bg-muted/50 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">
-                  {ev.body || "—"}
-                </pre>
+                {/* 弹窗内唯一的正文滚动区：不再叠 max-h，撑满右列即可。
+                    流式条目走另一块：那里讲「为什么不存正文」+ 结局，而不是空一片
+                    让用户以为没响应——这正是本次改动要修掉的误读。 */}
+                {ev.kind === "stream_response" ? (
+                  <div className="mx-4 mb-4 flex-1 overflow-auto rounded bg-muted/50 p-3 text-[11px] leading-relaxed">
+                    <p className="font-medium">
+                      {t(
+                        "settings.advanced.debugCapture.stream.title",
+                        "流式响应（SSE）：正文不捕获",
+                      )}
+                    </p>
+                    <p className="mt-1 text-muted-foreground">
+                      {t(
+                        "settings.advanced.debugCapture.stream.hint",
+                        "上游已返回上面那个状态码，所以这一轮是有响应的；SSE 体积大且不是排查目标，故只记元信息与收尾统计。",
+                      )}
+                    </p>
+                    <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono">
+                      <dt className="text-muted-foreground">
+                        {t("settings.advanced.debugCapture.stream.elapsed")}
+                      </dt>
+                      <dd>
+                        {ev.stream
+                          ? `${(ev.stream.elapsedMs / 1000).toFixed(1)}s`
+                          : "—"}
+                      </dd>
+                      <dt className="text-muted-foreground">
+                        {t("settings.advanced.debugCapture.stream.chunksLabel")}
+                      </dt>
+                      <dd>{ev.stream?.chunks ?? "—"}</dd>
+                      <dt className="text-muted-foreground">
+                        {t("settings.advanced.debugCapture.stream.bytesLabel")}
+                      </dt>
+                      <dd>{ev.stream ? formatBytes(ev.stream.bytes) : "—"}</dd>
+                      <dt className="text-muted-foreground">
+                        {t(
+                          "settings.advanced.debugCapture.stream.outcomeLabel",
+                        )}
+                      </dt>
+                      <dd>
+                        {ev.stream
+                          ? t(
+                              `settings.advanced.debugCapture.stream.outcome.${ev.stream.outcome}`,
+                            )
+                          : t(
+                              "settings.advanced.debugCapture.stream.running",
+                              "流式进行中",
+                            )}
+                      </dd>
+                    </dl>
+                  </div>
+                ) : (
+                  <pre className="mx-4 mb-4 flex-1 overflow-auto rounded bg-muted/50 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">
+                    {ev.body || "—"}
+                  </pre>
+                )}
               </div>
             </TabsContent>
           ))}

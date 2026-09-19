@@ -187,6 +187,10 @@ pub async fn handle_streaming(
     // 创建使用量收集器；关闭 usage logging 时不要在流式热路径上解析每个 SSE event。
     let usage_collector = create_usage_collector(ctx, state, status.as_u16(), parser_config);
 
+    // 流式响应**也要记一条**：状态码此刻已知，不记的话这一轮在查看器里会显示成
+    // 「无响应」——那是错的（上游确实回了 200）。正文不抓，只记元信息 + 收尾统计。
+    let stream_capture = ctx.stream_capture_seed(status.as_u16(), true).begin();
+
     // 获取流式超时配置
     let timeout_config = ctx.streaming_timeout_config();
 
@@ -197,6 +201,7 @@ pub async fn handle_streaming(
         usage_collector,
         timeout_config,
         connection_guard,
+        stream_capture,
     );
 
     let body = axum::body::Body::from_stream(logged_stream);
@@ -700,6 +705,7 @@ pub fn create_logged_passthrough_stream(
     usage_collector: Option<SseUsageCollector>,
     timeout_config: StreamingTimeoutConfig,
     connection_guard: Option<ActiveConnectionGuard>,
+    stream_capture: Option<super::debug_capture::StreamCaptureHandle>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let _conn_guard = connection_guard;
@@ -707,6 +713,9 @@ pub fn create_logged_passthrough_stream(
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut collector = usage_collector;
         let mut finish_guard = collector.clone().map(SseUsageFinishGuard::new);
+        // 抓取开启时才有值：每块计数、退出时按原因收尾。抓取关闭 → None，热路径
+        // 只剩一个 Option 分支；流被提前 drop → Drop 里补一条 Aborted。
+        let mut capture = stream_capture;
         let inspect_sse_events =
             collector.is_some() || log::log_enabled!(log::Level::Debug);
         let mut is_first_chunk = true;
@@ -725,6 +734,10 @@ pub fn create_logged_passthrough_stream(
 
         tokio::pin!(stream);
 
+        // 收尾原因默认 Completed（含 `break` 前未赋值的正常结束）；被提前 drop 时
+        // 句柄的 Drop 会补 Aborted，所以这里只需要区分「我们主动 break 出去」的三种。
+        let mut outcome = super::debug_capture::StreamOutcome::Completed;
+
         loop {
             // 选择超时时间：首字节超时或静默期超时
             let timeout_duration = if is_first_chunk {
@@ -742,6 +755,11 @@ pub fn create_logged_passthrough_stream(
                             // 超时
                             let timeout_type = if is_first_chunk { "首字节" } else { "静默期" };
                             log::error!("[{tag}] 流式响应{}超时 ({}秒)", timeout_type, duration.as_secs());
+                            outcome = if is_first_chunk {
+                                super::debug_capture::StreamOutcome::FirstByteTimeout
+                            } else {
+                                super::debug_capture::StreamOutcome::IdleTimeout
+                            };
                             yield Err(std::io::Error::other(format!("流式响应{timeout_type}超时")));
                             break;
                         }
@@ -759,6 +777,9 @@ pub fn create_logged_passthrough_stream(
                         );
                     }
                     is_first_chunk = false;
+                    if let Some(c) = &capture {
+                        c.count(bytes.len());
+                    }
                     if inspect_sse_events {
                         crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
@@ -798,6 +819,7 @@ pub fn create_logged_passthrough_stream(
                 }
                 Some(Err(e)) => {
                     log::error!("[{tag}] 流错误: {e}");
+                    outcome = super::debug_capture::StreamOutcome::UpstreamError;
                     yield Err(std::io::Error::other(e.to_string()));
                     break;
                 }
@@ -813,6 +835,10 @@ pub fn create_logged_passthrough_stream(
         }
         if let Some(guard) = &mut finish_guard {
             guard.disarm();
+        }
+        // 回填块数 / 字节数 / 耗时 / 结局：这条流式条目从此不再显示为空。
+        if let Some(c) = capture.take() {
+            c.finish(outcome);
         }
     }
 }

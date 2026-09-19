@@ -379,6 +379,36 @@ impl RequestContext {
         self.start_time.elapsed().as_millis() as u64
     }
 
+    /// 构造流式响应的捕获起点（见 `debug_capture::StreamCaptureSeed`）。
+    ///
+    /// 每条把上游 SSE 透传给客户端的流都该在**建好流、即将回给客户端时**调一次：
+    /// 状态码、渠道、模型此刻都确定了。返回 `None` 表示抓取关闭（调用方连计数都
+    /// 不做）。`raw_upstream=false` 用于代理重建/改写过的 SSE（客户端看到的不是
+    /// 上游原文）。
+    pub fn stream_capture_seed(
+        &self,
+        status: u16,
+        raw_upstream: bool,
+    ) -> crate::proxy::debug_capture::StreamCaptureSeed {
+        crate::proxy::debug_capture::StreamCaptureSeed {
+            turn_id: self.capture_turn_id,
+            session_id: self.session_id.clone(),
+            app_type: self.app_type_str.to_string(),
+            provider_id: self.provider.id.clone(),
+            model: self.capture_model().to_string(),
+            status,
+            raw_upstream,
+        }
+    }
+
+    /// usage / 捕获用的模型名：映射后的出站真值优先，其次客户端请求别名。
+    #[inline]
+    pub fn capture_model(&self) -> &str {
+        self.outbound_model
+            .as_deref()
+            .unwrap_or(&self.request_model)
+    }
+
     /// 获取流式超时配置
     ///
     /// 配置生效规则：

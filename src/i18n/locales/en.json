@@ -452,7 +452,7 @@
       },
       "debugCapture": {
         "label": "Request debug capture",
-        "hint": "Temporary debugging: when on, keeps request bodies, non-streaming response bodies, and error bodies (e.g. 400) in memory. Nothing is written to disk and it clears on restart; streaming (SSE) responses record only the HTTP status. Turning the switch off only stops NEW captures; already-captured entries stay listed (grouped per request, filterable by channel) until you clear them or restart.",
+        "hint": "Temporary debugging: when on, keeps request bodies, non-streaming response bodies, and error bodies (e.g. 400) in memory. Nothing is written to disk and it clears on restart; streaming (SSE) responses get their own entry with the HTTP status plus chunks / bytes / elapsed / how the stream ended, but never the body. Turning the switch off only stops NEW captures; already-captured entries stay listed (grouped per request, filterable by channel) until you clear them or restart.",
         "clear": "Clear",
         "empty": "No captures yet (turn the switch on, then send a request)",
         "emptyToggle": "New requests will be recorded below once enabled",
@@ -476,7 +476,25 @@
           "request": "Upstream",
           "response": "Response",
           "error": "Error",
-          "replay_response": "Replay"
+          "replay_response": "Replay",
+          "stream_response": "Stream"
+        },
+        "stream": {
+          "title": "Streaming response (SSE): body not captured",
+          "hint": "The upstream already returned the status code above, so this turn did get a response. SSE bodies are large and are not what this view is for, so only metadata and end-of-stream stats are kept.",
+          "elapsed": "elapsed",
+          "chunksLabel": "chunks",
+          "bytesLabel": "bytes",
+          "outcomeLabel": "ended by",
+          "running": "stream in progress",
+          "chunks": "{{n}} chunks",
+          "outcome": {
+            "completed": "completed",
+            "first_byte_timeout": "first-byte timeout",
+            "idle_timeout": "idle timeout",
+            "upstream_error": "upstream error",
+            "aborted": "aborted (client left)"
+          }
         }
       }
     },
