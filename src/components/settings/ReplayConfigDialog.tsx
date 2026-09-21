@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogFooter,
   DialogHeader,
@@ -152,7 +153,7 @@ export function ReplayConfigDialog({
           <DialogTitle>{t("replay.dialogTitle")}</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <DialogBody className="space-y-4">
           <Alert className="border-amber-500/40 bg-amber-500/10">
             <AlertDescription className="text-xs">
               {t("replay.freezeWarning")}
@@ -336,7 +337,7 @@ export function ReplayConfigDialog({
               </AlertDescription>
             </Alert>
           )}
-        </div>
+        </DialogBody>
 
         <DialogFooter>
           <Button

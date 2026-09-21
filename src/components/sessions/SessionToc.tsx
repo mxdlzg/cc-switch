@@ -92,6 +92,8 @@ export function SessionTocDialog({
       <DialogContent
         className="max-w-md max-h-[70vh] flex flex-col p-0 gap-0"
         zIndex="alert"
+        // 本弹窗在 DialogHeader 里自带叉号，关掉内置的那个免得叠成两个
+        showCloseButton={false}
         onInteractOutside={() => onOpenChange(false)}
         onEscapeKeyDown={() => onOpenChange(false)}
       >
