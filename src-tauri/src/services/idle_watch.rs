@@ -125,10 +125,9 @@ pub fn decide_recovery(
     prev_last: Option<Option<i64>>,
     observed_last: Option<i64>,
 ) -> Option<i64> {
-    // 首轮只播种。注意这一行必须排在取 observed 之前：两者都缺时也不该报。
-    let Some(seed) = prev_last else {
-        return None;
-    };
+    // 首轮只播种：外层 `None`（键不在播种表里）直接不报。两个 `?` 缺任一个都不该报，
+    // 所以取 observed 的先后无所谓——真正要紧的是这两行都排在算 gap 之前。
+    let seed = prev_last?;
     let observed = observed_last?;
     // 基线要夹到 `created_at_sec`，理由与静默计时完全一样（模块头约束 1），但这里多
     // 一个只在恢复方向才出现的坑：内存表按**渠道**存，删掉一条规则再加一条同渠道的
