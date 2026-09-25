@@ -7,7 +7,7 @@
 //! 状态表的 `idleSec` 与后台引擎**用同一条基线公式**（`max(最近成功, 规则建立时刻)`），
 //! 否则面板显示「静默 3 天」而引擎判定「还没到点」，用户只会认为功能坏了。
 
-use crate::database::{IdleWatchConfig, IdleWatchMode, IdleWatchRule};
+use crate::database::{IdleWatchConfig, IdleWatchMode, IdleWatchNotifyOn, IdleWatchRule};
 use crate::error::AppError;
 use crate::services::idle_watch::ChannelIdleStatus;
 use crate::store::AppState;
@@ -31,6 +31,10 @@ pub struct IdleWatchRuleInput {
     /// `"once"` | `"always"`
     pub mode: String,
     pub threshold_minutes: String,
+    /// `"silence"` | `"recovery"` | `"both"`。缺省即 `silence`——面板上没这个控件的
+    /// 旧版前端（或直接 invoke）不该因此改变提醒方向。
+    #[serde(default)]
+    pub notify_on: String,
 }
 
 /// 前端传来的整块配置。
@@ -102,6 +106,20 @@ fn build_config(
             }
         };
 
+        // 方向与 mode 同一套写法：容忍大小写与首尾空格，认不出就明确报错。放宽到
+        // 「认不出当 silence」会让拼错的规则悄悄换成另一种触发条件。
+        let notify_on = match item.notify_on.trim().to_ascii_lowercase().as_str() {
+            "" => IdleWatchNotifyOn::default(),
+            "silence" => IdleWatchNotifyOn::Silence,
+            "recovery" => IdleWatchNotifyOn::Recovery,
+            "both" => IdleWatchNotifyOn::Both,
+            other => {
+                return Err(AppError::InvalidInput(format!(
+                    "未知提醒方向: {other}（应为 silence、recovery 或 both）"
+                )))
+            }
+        };
+
         let raw = item.threshold_minutes.trim();
         let minutes: i64 = raw
             .parse()
@@ -134,6 +152,7 @@ fn build_config(
             mode,
             threshold_minutes: minutes as u64,
             created_at_sec,
+            notify_on,
         });
     }
 
@@ -200,6 +219,7 @@ pub fn get_channel_idle_status(
             request_count: item.request_count,
             mode: rule.map(|r| r.mode),
             threshold_minutes: rule.map(|r| r.threshold_minutes),
+            notify_on: rule.map(|r| r.notify_on),
         });
     }
 
@@ -226,6 +246,7 @@ pub fn get_channel_idle_status(
             request_count: 0,
             mode: Some(rule.mode),
             threshold_minutes: Some(rule.threshold_minutes),
+            notify_on: Some(rule.notify_on),
         });
     }
 
@@ -252,6 +273,7 @@ mod tests {
             provider_id: "prov-a".into(),
             mode: "always".into(),
             threshold_minutes: "60".into(),
+            notify_on: "silence".into(),
         };
         for (key, value) in overrides {
             match *key {
@@ -259,6 +281,7 @@ mod tests {
                 "provider_id" => item.provider_id = (*value).into(),
                 "mode" => item.mode = (*value).into(),
                 "threshold_minutes" => item.threshold_minutes = (*value).into(),
+                "notify_on" => item.notify_on = (*value).into(),
                 other => panic!("unknown field {other}"),
             }
         }
@@ -290,6 +313,7 @@ mod tests {
                 mode: IdleWatchMode::Always,
                 threshold_minutes: 30,
                 created_at_sec: 123,
+                notify_on: IdleWatchNotifyOn::Silence,
             }],
         };
         // 只改阈值：计时基线不该被重置成「现在」，否则每次编辑都重新等一整周期
@@ -338,6 +362,48 @@ mod tests {
         );
         assert!(build_config(
             input(&[("mode", "weekly")]),
+            &IdleWatchConfig::default(),
+            NOW
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn notify_on_is_case_tolerant_but_rejects_unknown() {
+        for (raw, expected) in [
+            ("silence", IdleWatchNotifyOn::Silence),
+            ("Recovery", IdleWatchNotifyOn::Recovery),
+            (" BOTH ", IdleWatchNotifyOn::Both),
+        ] {
+            assert_eq!(
+                build_config(
+                    input(&[("notify_on", raw)]),
+                    &IdleWatchConfig::default(),
+                    NOW
+                )
+                .unwrap()
+                .rules[0]
+                    .notify_on,
+                expected,
+                "方向 {raw:?} 应被接受（与 mode 同一套宽容写法）"
+            );
+        }
+        // 空串 = 旧版前端不传这个字段 → 默认方向，不是错误。
+        assert_eq!(
+            build_config(
+                input(&[("notify_on", "")]),
+                &IdleWatchConfig::default(),
+                NOW
+            )
+            .unwrap()
+            .rules[0]
+                .notify_on,
+            IdleWatchNotifyOn::Silence
+        );
+        // 认不出的写法必须报错，不能悄悄当 silence：那会让一条「恢复」规则因为一个
+        // 拼写错误变成另一种触发条件，用户只看到「提醒的方向不对」而查不出原因。
+        assert!(build_config(
+            input(&[("notify_on", "revover")]),
             &IdleWatchConfig::default(),
             NOW
         )
@@ -395,6 +461,7 @@ mod tests {
             provider_id: "prov-a".into(),
             mode: "once".into(),
             threshold_minutes: "5".into(),
+            notify_on: "silence".into(),
         });
         assert!(build_config(cfg, &IdleWatchConfig::default(), NOW).is_err());
 
@@ -405,6 +472,7 @@ mod tests {
             provider_id: "prov-a".into(),
             mode: "once".into(),
             threshold_minutes: "5".into(),
+            notify_on: "silence".into(),
         });
         let built = build_config(ok, &IdleWatchConfig::default(), NOW).unwrap();
         assert_eq!(built.rules.len(), 2);

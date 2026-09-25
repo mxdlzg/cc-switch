@@ -3105,7 +3105,7 @@
   },
   "idleWatch": {
     "title": "渠道静默提醒",
-    "description": "某渠道太久没有成功请求时提醒你，可选顺手自动保活",
+    "description": "某渠道太久没有成功请求时提醒你，也可在它静默满阈值后又成功时提醒你；可选顺手自动保活",
     "proxiedOnlyHint": "按渠道归属只在接管/网关下成立：CLI 直连供应商时用量是扫会话文件得来的，没有渠道归属。所以一个从不走代理的渠道会一直显示「从未有成功请求」，并按规则建立时刻提醒。",
     "enabled": "渠道静默提醒",
     "enabledHint": "关闭只是停止检查，已设的规则会保留。",
@@ -3126,6 +3126,17 @@
       "day": "天"
     },
     "modeHint": "常开＝每再静默一个阈值提醒一次；一次性＝提醒一次后规则自动删除，直到你重新设。",
+    "notifyOn": {
+      "label": "提醒方向",
+      "silence": "静默时",
+      "recovery": "恢复时",
+      "both": "两者"
+    },
+    "notifyOnHint": "静默时＝渠道太久没有成功请求就提醒。恢复时＝静默先满阈值，随后到来的第一条成功请求才提醒；一直正常用的渠道不会被打扰。两者＝两头都报。",
+    "thresholdLabelRecovery": "静默满多久后恢复才提醒",
+    "thresholdPreviewRecovery": "即：渠道静默满 {{duration}} 后，第一条成功请求到来时提醒",
+    "thresholdPreviewBoth": "即：连续 {{duration}} 没有成功请求会提醒；静默满 {{duration}} 后的第一条成功请求也会提醒",
+    "recoveryAlertBody": "静默 {{idle}} 后恢复成功请求",
     "pickProvider": "请选择供应商",
     "loadingProviders": "加载供应商…",
     "duplicate": "该渠道已有规则，请直接修改它",

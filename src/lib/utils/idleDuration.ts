@@ -128,13 +128,18 @@ export function formatThresholdMinutes(minutes: number, t: TFunction): string {
  * 顺序固定「静默多久 → 保活结果 → 一次性规则已结束」，与 Rust 侧系统通知的正文顺序
  * 一致：用户在系统通知里和应用里看到的应当是同一句话。
  *
- * 参数形状刻意写得很松（`mode` / `keepalive` 是 string 而不是联合类型）：它同时被
- * 事件负载与测试用字面量喂值，收紧类型只会逼调用方到处 as。
+ * `kind` 决定第一句怎么说，**不能共用模板**：`silence` 的 `idleSec` 是「至今静默」，
+ * `recovery` 的却是「那次成功之前的静默」——把恢复写成静默正好说反了。恢复提醒不带
+ * 保活后缀（后端在该方向恒为 `skipped`，渠道刚成功过，poking 没有意义）。
+ *
+ * 参数形状刻意写得很松（`mode` / `keepalive` / `kind` 是 string 而不是联合类型）：它
+ * 同时被事件负载与测试用字面量喂值，收紧类型只会逼调用方到处 as。
  */
 export function describeIdleAlert(
   alert: {
     idleSec: number;
     mode: string;
+    kind?: string;
     keepalive: string;
     keepaliveError: string | null;
   },
@@ -142,7 +147,14 @@ export function describeIdleAlert(
 ): string {
   // 不足 1 分钟也按 1 分钟报：能触发提醒说明阈值已过，报「0 分钟」自相矛盾。
   const idle = formatIdleDuration(Math.max(60, alert.idleSec), t);
-  const parts = [t("idleWatch.alertBody", { idle })];
+  const parts = [
+    t(
+      alert.kind === "recovery"
+        ? "idleWatch.recoveryAlertBody"
+        : "idleWatch.alertBody",
+      { idle },
+    ),
+  ];
   if (alert.keepalive !== "skipped") {
     parts.push(
       t(`idleWatch.keepaliveResult.${alert.keepalive}`, {

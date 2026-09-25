@@ -3,6 +3,7 @@ import type { TFunction } from "i18next";
 import {
   THRESHOLD,
   UNIT_FACTORS,
+  describeIdleAlert,
   formatIdleDuration,
   formatThresholdMinutes,
   minutesForValue,
@@ -121,5 +122,56 @@ describe("unit switching keeps the duration", () => {
     const asMinutes = minutesForValue("2", "hour");
     expect(asMinutes).not.toBeNull();
     expect(valueForMinutes(asMinutes!, "minute")).toBe(120);
+  });
+});
+
+/**
+ * 提醒正文（`describeIdleAlert`）。
+ *
+ * 关键在于两种 `kind` 必须走不同模板：`idleSec` 这个数字在 `silence` 下是「至今静默
+ * 多久」，在 `recovery` 下却是「那次成功之前静默了多久」——共用一条文案会把「回来了」
+ * 说成「还没回来」，正好相反。
+ */
+describe("describeIdleAlert", () => {
+  it("uses the silence wording for the idle direction", () => {
+    const text = describeIdleAlert(
+      {
+        idleSec: 7200,
+        mode: "always",
+        kind: "silence",
+        keepalive: "skipped",
+        keepaliveError: null,
+      },
+      t,
+    );
+    expect(text).toContain("idleWatch.alertBody");
+    expect(text).not.toContain("recoveryAlertBody");
+  });
+
+  it("uses the recovery wording when a channel comes back", () => {
+    const text = describeIdleAlert(
+      {
+        idleSec: 12600,
+        mode: "always",
+        kind: "recovery",
+        keepalive: "skipped",
+        keepaliveError: null,
+      },
+      t,
+    );
+    expect(text).toContain("idleWatch.recoveryAlertBody");
+    expect(text).not.toContain("idleWatch.alertBody:");
+    // 恢复方向后端恒为 skipped，因此不该拼保活后缀
+    expect(text).not.toContain("keepaliveResult");
+  });
+
+  it("keeps appending the one-shot note for either direction", () => {
+    const once = (kind: string) =>
+      describeIdleAlert(
+        { idleSec: 3600, mode: "once", kind, keepalive: "skipped", keepaliveError: null },
+        t,
+      );
+    expect(once("silence")).toContain("idleWatch.onceDone");
+    expect(once("recovery")).toContain("idleWatch.onceDone");
   });
 });

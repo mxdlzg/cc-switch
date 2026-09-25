@@ -3106,7 +3106,7 @@
   },
   "idleWatch": {
     "title": "渠道靜默提醒",
-    "description": "某渠道太久沒有成功請求時提醒你，可選順手自動保活",
+    "description": "某渠道太久沒有成功請求時提醒你，也可在它靜默滿閾值後又成功時提醒你；可選順手自動保活",
     "proxiedOnlyHint": "按渠道歸屬只在接管/閘道下成立：CLI 直連供應商時用量是掃會話檔案得來的，沒有渠道歸屬。所以一個從不走代理的渠道會一直顯示「從未會有成功請求」，並依規則建立時刻提醒。",
     "enabled": "渠道靜默提醒",
     "enabledHint": "關閉只是停止檢查，已設的規則會保留。",
@@ -3127,6 +3127,17 @@
       "day": "天"
     },
     "modeHint": "常開＝每再靜默一個閾值提醒一次；一次性＝提醒一次後規則自動刪除，直到你重新設。",
+    "notifyOn": {
+      "label": "提醒方向",
+      "silence": "靜默時",
+      "recovery": "恢復時",
+      "both": "兩者"
+    },
+    "notifyOnHint": "靜默時＝渠道太久沒有成功請求就提醒。恢復時＝靜默先滿閾值，隨後到來的第一筆成功請求才提醒；一直正常使用的渠道不會被打擾。兩者＝兩頭都報。",
+    "thresholdLabelRecovery": "靜默滿多久後恢復才提醒",
+    "thresholdPreviewRecovery": "即：渠道靜默滿 {{duration}} 後，第一筆成功請求到來時提醒",
+    "thresholdPreviewBoth": "即：連續 {{duration}} 沒有成功請求會提醒；靜默滿 {{duration}} 後的第一筆成功請求也會提醒",
+    "recoveryAlertBody": "靜默 {{idle}} 後恢復成功請求",
     "pickProvider": "請選擇供應商",
     "loadingProviders": "載入供應商…",
     "duplicate": "該渠道已有規則，請直接修改它",

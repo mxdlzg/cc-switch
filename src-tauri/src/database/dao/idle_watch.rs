@@ -24,6 +24,29 @@ pub enum IdleWatchMode {
     Always,
 }
 
+/// 提醒方向：盯「静默」那一头还是「恢复」那一头。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IdleWatchNotifyOn {
+    /// 静默满阈值就提醒（本功能最初也是唯一的行为，故为默认）。
+    #[default]
+    Silence,
+    /// 静默满阈值**之后**到来的第一条成功请求才提醒。渠道一直正常用时不打扰。
+    Recovery,
+    /// 两头都提醒。
+    Both,
+}
+
+impl IdleWatchNotifyOn {
+    pub fn watches_silence(self) -> bool {
+        matches!(self, Self::Silence | Self::Both)
+    }
+
+    pub fn watches_recovery(self) -> bool {
+        matches!(self, Self::Recovery | Self::Both)
+    }
+}
+
 /// 一条渠道静默规则。渠道 = (`app_type`, `provider_id`)，与查看器/用量统计同口径。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,11 +55,18 @@ pub struct IdleWatchRule {
     pub provider_id: String,
     pub mode: IdleWatchMode,
     /// 静默多久算「太久没用」，单位**分钟**（前端填分钟，后端换算秒）。
+    ///
+    /// 对 `Recovery` 规则而言它是**资格门槛**：恢复前的静默得先满这个时长，那次成功
+    /// 才值得报一句「回来了」。
     pub threshold_minutes: u64,
     /// 规则建立时刻（Unix 秒）。用作计时基线下限，见 `services::idle_watch` 的
     /// 「基线取 max(最近成功, 本字段)」——否则给一个已经静默一个月的渠道加规则，
     /// 下一个 tick 就会弹一条「你很久没用了」，而用户其实刚设完规则。
     pub created_at_sec: i64,
+    /// 提醒方向。`#[serde(default)]` = 老配置（本字段还不存在时存的）读出来是
+    /// `Silence`，于是升级后的提醒行为与升级前一字不差。
+    #[serde(default)]
+    pub notify_on: IdleWatchNotifyOn,
 }
 
 impl IdleWatchRule {
@@ -243,6 +273,7 @@ mod tests {
                 mode: IdleWatchMode::Once,
                 threshold_minutes: 90,
                 created_at_sec: 1_700_000_000,
+                notify_on: IdleWatchNotifyOn::Recovery,
             }],
         };
         db.save_idle_watch_config(&cfg).unwrap();
@@ -253,6 +284,36 @@ mod tests {
         assert_eq!(got.rules[0].mode, IdleWatchMode::Once);
         assert_eq!(got.rules[0].threshold_minutes, 90);
         assert_eq!(got.rules[0].created_at_sec, 1_700_000_000);
+        assert_eq!(
+            got.rules[0].notify_on,
+            IdleWatchNotifyOn::Recovery,
+            "提醒方向要整块往返"
+        );
+    }
+
+    /// 升级兼容：`notify_on` 之前存下的配置（JSON 里根本没这个键）必须读得出来，且
+    /// 方向落在 `Silence` 上——否则升级本身就改变了用户的提醒行为。
+    #[test]
+    fn legacy_config_without_notify_on_reads_as_silence() {
+        let db = Database::memory().unwrap();
+        db.set_setting(
+            "idle_watch_config",
+            r#"{"enabled":true,"keepaliveEnabled":false,"rules":[
+                {"appType":"claude","providerId":"prov-a","mode":"always",
+                 "thresholdMinutes":120,"createdAtSec":1700000000}
+            ]}"#,
+        )
+        .unwrap();
+
+        let got = db.get_idle_watch_config().unwrap();
+        assert!(got.enabled);
+        assert_eq!(got.rules.len(), 1);
+        assert_eq!(got.rules[0].threshold_minutes, 120);
+        assert_eq!(
+            got.rules[0].notify_on,
+            IdleWatchNotifyOn::Silence,
+            "缺 notify_on 必须退回静默方向（本功能最初也是唯一的行为）"
+        );
     }
 
     #[test]
@@ -378,6 +439,7 @@ mod tests {
             mode: IdleWatchMode::Always,
             threshold_minutes: 0,
             created_at_sec: 0,
+            notify_on: IdleWatchNotifyOn::Silence,
         };
         assert_eq!(rule.threshold_sec(), 60, "0 分钟兜成 60 秒，避免除零");
     }
@@ -390,6 +452,7 @@ mod tests {
             mode: IdleWatchMode::Once,
             threshold_minutes: 5,
             created_at_sec: 0,
+            notify_on: IdleWatchNotifyOn::Silence,
         };
         let b = IdleWatchRule {
             app_type: "codex".into(),

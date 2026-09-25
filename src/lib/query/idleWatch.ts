@@ -84,6 +84,8 @@ export function useIdleWatchEventBridge() {
         "idle-watch-alert",
         (event) => {
           for (const alert of event.payload) {
+            // 方向写在正文里（`describeIdleAlert` 按 `kind` 分岔），标题保持
+            // 「渠道名 · 应用」不变：它负责「哪个渠道」，正文负责「出了什么事」。
             toast.warning(`${alert.providerName} · ${alert.appType}`, {
               description: describeIdleAlert(alert, t),
               duration: 8000,

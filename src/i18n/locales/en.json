@@ -3105,7 +3105,7 @@
   },
   "idleWatch": {
     "title": "Idle channel alerts",
-    "description": "Get notified when a channel has gone too long without a successful request; optionally poke it with a keep-alive",
+    "description": "Get notified when a channel goes too long without a successful request, or when one comes back after such a silence; optionally poke it with a keep-alive",
     "proxiedOnlyHint": "Per-channel attribution only exists for traffic that goes through the local proxy. When a CLI talks to a provider directly, its usage is scraped from session files and has no channel, so a channel that never gets proxied will keep showing \"no requests\" and alert on its baseline.",
     "enabled": "Idle channel alerts",
     "enabledHint": "Off only pauses the checks - your rules are kept.",
@@ -3126,6 +3126,17 @@
       "day": "d"
     },
     "modeHint": "Always = one more alert for every additional threshold of silence. One-shot = the rule deletes itself after it fires, until you set it again.",
+    "notifyOn": {
+      "label": "Alert on",
+      "silence": "Idle",
+      "recovery": "Recovery",
+      "both": "Both"
+    },
+    "notifyOnHint": "Idle = alert when a channel goes too long without a successful request. Recovery = alert on the FIRST successful request after a silence that already reached the threshold - a channel that keeps working stays quiet. Both = either.",
+    "thresholdLabelRecovery": "Alert once recovered after",
+    "thresholdPreviewRecovery": "i.e. alert on the first successful request after the channel has been silent for {{duration}}",
+    "thresholdPreviewBoth": "i.e. alert when the channel goes {{duration}} without a successful request, and again on the first successful request after {{duration}} of silence",
+    "recoveryAlertBody": "back to serving successful requests after {{idle}} of silence",
     "pickProvider": "Pick a provider",
     "loadingProviders": "Loading providers...",
     "duplicate": "This channel already has a rule - edit it instead",

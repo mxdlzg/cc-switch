@@ -23,6 +23,7 @@ import type {
   IdleWatchConfig,
   IdleWatchConfigInput,
   IdleWatchMode,
+  IdleWatchNotifyOn,
   IdleWatchRuleInput,
 } from "@/lib/api/idleWatch";
 import {
@@ -45,6 +46,13 @@ import {
 
 const APP_OPTIONS = PROXY_APP_IDS.map((id) => ({ id, label: getAppLabel(id) }));
 
+/** 提醒方向下拉的顺序（与 `notifyOn.*` 文案一一对应）。 */
+const NOTIFY_DIRECTIONS: readonly IdleWatchNotifyOn[] = [
+  "silence",
+  "recovery",
+  "both",
+];
+
 const ruleKey = (appType: string, providerId: string) =>
   `${appType}/${providerId}`;
 
@@ -64,6 +72,7 @@ function toInput(config: IdleWatchConfig): IdleWatchConfigInput {
       providerId: r.providerId,
       mode: r.mode,
       thresholdMinutes: String(r.thresholdMinutes),
+      notifyOn: r.notifyOn,
     })),
   };
 }
@@ -123,6 +132,8 @@ export function IdleWatchPanel() {
   const [mode, setMode] = useState<IdleWatchMode>("always");
   const [threshold, setThreshold] = useState("2");
   const [thresholdUnit, setThresholdUnit] = useState<ThresholdUnit>("hour");
+  // 默认静默方向：新增功能不该改变用户既有的默认预期（也与服务端 serde 默认一致）。
+  const [notifyOn, setNotifyOn] = useState<IdleWatchNotifyOn>("silence");
 
   const providersQuery = useQuery({
     queryKey: ["idleWatchProviders", appType],
@@ -140,14 +151,24 @@ export function IdleWatchPanel() {
   /**
    * 新增行的实时预览：把「数值 + 单位」翻成一句人话（「即：连续 2 小时没有成功请求
    * 就提醒」）。非法值返回 null，调用处退化成区间错误文案。
+   *
+   * 措辞按方向分岔：恢复方向的阈值是**资格门槛**（静默满这个时长之后的第一次成功才
+   * 报），沿用静默那句「连续 2 小时没有成功请求就提醒」正好把话说反。`both` 有自己
+   * 的一条文案，而不是把两句拼起来——同一个数字在两头各自意味着一件事，拼起来只会
+   * 得到两个「即：」。
    */
   const addRowPreview = useMemo(() => {
     const minutes = minutesForValue(threshold, thresholdUnit);
     if (minutes === null) return null;
-    return t("idleWatch.thresholdPreview", {
-      duration: formatThresholdMinutes(minutes, t),
-    });
-  }, [threshold, thresholdUnit, t]);
+    const duration = formatThresholdMinutes(minutes, t);
+    const key =
+      notifyOn === "both"
+        ? "idleWatch.thresholdPreviewBoth"
+        : notifyOn === "recovery"
+          ? "idleWatch.thresholdPreviewRecovery"
+          : "idleWatch.thresholdPreview";
+    return t(key, { duration });
+  }, [threshold, thresholdUnit, notifyOn, t]);
 
   const save = async (next: IdleWatchConfigInput) => {
     setDraft(next);
@@ -192,7 +213,13 @@ export function IdleWatchPanel() {
       ...view,
       rules: [
         ...view.rules,
-        { appType, providerId, mode, thresholdMinutes: String(minutes) },
+        {
+          appType,
+          providerId,
+          mode,
+          thresholdMinutes: String(minutes),
+          notifyOn,
+        },
       ],
     });
     setProviderId("");
@@ -224,6 +251,17 @@ export function IdleWatchPanel() {
     const draftRule = ruleByChannel.get(ruleKey(row.appType, row.providerId));
     if (draftRule) return Number(draftRule.thresholdMinutes) || 0;
     return row.thresholdMinutes ?? 0;
+  };
+
+  /**
+   * 徽章上的方向标签。`silence` **不显示**：它是默认方向，也是本功能此前的全部行为，
+   * 给每条老规则都加一个「静默时」等于凭空改变用户看惯的那一列。只有偏离默认的
+   * 规则才值得多占一个词。
+   */
+  const badgeNotifyOn = (row: ChannelIdleStatus): IdleWatchNotifyOn | null => {
+    const draftRule = ruleByChannel.get(ruleKey(row.appType, row.providerId));
+    const value = draftRule?.notifyOn ?? row.notifyOn ?? "silence";
+    return value === "silence" ? null : value;
   };
 
   return (
@@ -299,9 +337,19 @@ export function IdleWatchPanel() {
                 <ThresholdInput
                   minutes={rule.thresholdMinutes}
                   rangeError={rangeError}
+                  label={t(
+                    rule.notifyOn === "silence"
+                      ? "idleWatch.thresholdLabel"
+                      : "idleWatch.thresholdLabelRecovery",
+                  )}
                   onCommit={(next) =>
                     patchRule(index, { thresholdMinutes: next })
                   }
+                />
+
+                <NotifyOnSelect
+                  value={rule.notifyOn}
+                  onChange={(next) => patchRule(index, { notifyOn: next })}
                 />
 
                 <Button
@@ -372,11 +420,17 @@ export function IdleWatchPanel() {
             </SelectContent>
           </Select>
 
+          <NotifyOnSelect value={notifyOn} onChange={setNotifyOn} />
+
           <div className="flex items-center gap-1">
             {/* 这一列必须自带语义：光一个数字（曾经的「120」）没人推断得出它是
-                「静默多久后提醒」，更猜不到单位。 */}
+                「静默多久后提醒」，更猜不到单位。恢复方向下含义不同，措辞跟着换。 */}
             <span className="text-xs text-muted-foreground">
-              {t("idleWatch.thresholdLabel")}
+              {t(
+                notifyOn === "silence"
+                  ? "idleWatch.thresholdLabel"
+                  : "idleWatch.thresholdLabelRecovery",
+              )}
             </span>
             <Input
               type="text"
@@ -419,6 +473,11 @@ export function IdleWatchPanel() {
         <p className="text-xs text-muted-foreground">
           {t("idleWatch.modeHint")}
         </p>
+        {/* 方向是这次新增的概念，且两种方向的阈值含义不同——不解释清楚，用户只会
+            看到「设了恢复提醒却一直没收到」，而那是因为渠道没先静默满阈值。 */}
+        <p className="text-xs text-muted-foreground">
+          {t("idleWatch.notifyOnHint")}
+        </p>
       </div>
 
       {/* 状态表 */}
@@ -451,51 +510,70 @@ export function IdleWatchPanel() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
-                  <tr
-                    key={ruleKey(row.appType, row.providerId)}
-                    className="border-t border-border/60"
-                  >
-                    <td className="px-3 py-2">
-                      <span className="block max-w-[220px] truncate">
-                        {row.providerName || row.providerId}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {getAppLabel(row.appType)}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono text-xs">
-                      {row.successCount}/{row.requestCount}
-                    </td>
-                    <td className="px-3 py-2 text-right text-xs">
-                      {row.lastSuccessAt === null
-                        ? t("idleWatch.never")
-                        : formatIdleDuration(
-                            Math.max(0, Date.now() / 1000 - row.lastSuccessAt),
-                            t,
-                          )}
-                    </td>
-                    <td className="px-3 py-2 text-right text-xs">
-                      {row.requestCount > 0 && row.successCount === 0 ? (
-                        <span className="text-amber-600 dark:text-amber-400">
-                          {t("idleWatch.allFailed")}
+                {rows.map((row) => {
+                  // 方向标签在渲染这一行时只算一次（见 `badgeNotifyOn` 的取值优先级）。
+                  const notifyBadge = badgeNotifyOn(row);
+                  return (
+                    <tr
+                      key={ruleKey(row.appType, row.providerId)}
+                      className="border-t border-border/60"
+                    >
+                      <td className="px-3 py-2">
+                        <span className="block max-w-[220px] truncate">
+                          {row.providerName || row.providerId}
                         </span>
-                      ) : (
-                        formatIdleDuration(row.idleSec, t)
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      {row.mode ? (
-                        <Badge className="bg-orange-500/15 text-orange-600 dark:text-orange-400">
-                          {t(`idleWatch.mode.${row.mode}`)}{" "}
-                          {formatThresholdMinutes(badgeThreshold(row), t)}
-                        </Badge>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                        <span className="text-xs text-muted-foreground">
+                          {getAppLabel(row.appType)}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono text-xs">
+                        {row.successCount}/{row.requestCount}
+                      </td>
+                      <td className="px-3 py-2 text-right text-xs">
+                        {row.lastSuccessAt === null
+                          ? t("idleWatch.never")
+                          : formatIdleDuration(
+                              Math.max(
+                                0,
+                                Date.now() / 1000 - row.lastSuccessAt,
+                              ),
+                              t,
+                            )}
+                      </td>
+                      <td className="px-3 py-2 text-right text-xs">
+                        {row.requestCount > 0 && row.successCount === 0 ? (
+                          <span className="text-amber-600 dark:text-amber-400">
+                            {t("idleWatch.allFailed")}
+                          </span>
+                        ) : (
+                          formatIdleDuration(row.idleSec, t)
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        {row.mode ? (
+                          <>
+                            <Badge className="bg-orange-500/15 text-orange-600 dark:text-orange-400">
+                              {t(`idleWatch.mode.${row.mode}`)}{" "}
+                              {formatThresholdMinutes(badgeThreshold(row), t)}
+                            </Badge>
+                            {/* 方向只在偏离默认时出现（见 `badgeNotifyOn`）：一个阈值
+                              配两种含义，光看数字分不出这条报的是「没人用」还是
+                              「回来了」。 */}
+                            {notifyBadge && (
+                              <Badge className="ml-1 bg-teal-500/15 text-teal-600 dark:text-teal-400">
+                                {t(`idleWatch.notifyOn.${notifyBadge}`)}
+                              </Badge>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            —
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -512,6 +590,12 @@ interface ThresholdInputProps {
   /** 存储单位（分钟），来自配置 */
   minutes: string;
   rangeError: string;
+  /**
+   * 这个输入框在问什么（「静默多久后提醒」/「静默满多久后恢复才提醒」）。默认那条
+   * 措辞只对静默方向成立，所以由调用方按方向传进来——同一个数字在两种规则里含义
+   * 不同，控件说明却写死一句就会误导。
+   */
+  label?: string;
   /** 失焦或回车时提交，参数同样是分钟；值没变则不调用 */
   onCommit: (minutes: string) => void;
 }
@@ -531,6 +615,7 @@ interface ThresholdInputProps {
 function ThresholdInput({
   minutes,
   rangeError,
+  label,
   onCommit,
 }: ThresholdInputProps) {
   const { t } = useTranslation();
@@ -573,7 +658,9 @@ function ThresholdInput({
           if (e.key === "Enter") (e.target as HTMLInputElement).blur();
         }}
         className="h-8 w-[70px] text-sm"
-        aria-label={t("idleWatch.threshold")}
+        // 规则行旁边没有可见的说明文字（新增行才有），所以读屏文案得自带语义；
+        // 调用方没传就退回中性的「阈值」。
+        aria-label={label ?? t("idleWatch.threshold")}
       />
       <ThresholdUnitSelect
         unit={unit}
@@ -586,6 +673,39 @@ function ThresholdInput({
         }}
       />
     </div>
+  );
+}
+
+interface NotifyOnSelectProps {
+  value: IdleWatchNotifyOn;
+  onChange: (next: IdleWatchNotifyOn) => void;
+}
+
+/**
+ * 提醒方向下拉（静默时 / 恢复时 / 两者）。新增行与规则行共用，理由同
+ * `ThresholdUnitSelect`：两处各写一份 `SelectItem`，措辞与顺序迟早会分岔。
+ */
+function NotifyOnSelect({ value, onChange }: NotifyOnSelectProps) {
+  const { t } = useTranslation();
+  return (
+    <Select
+      value={value}
+      onValueChange={(next) => onChange(next as IdleWatchNotifyOn)}
+    >
+      <SelectTrigger
+        className="h-8 w-[110px] text-xs"
+        aria-label={t("idleWatch.notifyOn.label")}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {NOTIFY_DIRECTIONS.map((d) => (
+          <SelectItem key={d} value={d}>
+            {t(`idleWatch.notifyOn.${d}`)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 

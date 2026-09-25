@@ -35,7 +35,9 @@ mod tests;
 //
 // 渠道静默监控：三个配置类型被命令层与后台引擎点名。`ChannelIdle` 不在其列——它
 // 只在 database 内部流转，外面拿到的是 services 层的 ChannelIdleStatus。
-pub(crate) use dao::idle_watch::{IdleWatchConfig, IdleWatchMode, IdleWatchRule};
+pub(crate) use dao::idle_watch::{
+    IdleWatchConfig, IdleWatchMode, IdleWatchNotifyOn, IdleWatchRule,
+};
 pub(crate) use dao::providers_seed::{
     is_official_seed_id, CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID, CODEX_OFFICIAL_PROVIDER_ID,
     GROKBUILD_OFFICIAL_PROVIDER_ID,

@@ -36,6 +36,15 @@ const requiredKeys = [
   "idleWatch.thresholdUnit.hour",
   "idleWatch.thresholdUnit.day",
   "idleWatch.modeHint",
+  "idleWatch.notifyOn.label",
+  "idleWatch.notifyOn.silence",
+  "idleWatch.notifyOn.recovery",
+  "idleWatch.notifyOn.both",
+  "idleWatch.notifyOnHint",
+  "idleWatch.thresholdLabelRecovery",
+  "idleWatch.thresholdPreviewRecovery",
+  "idleWatch.thresholdPreviewBoth",
+  "idleWatch.recoveryAlertBody",
   "idleWatch.pickProvider",
   "idleWatch.loadingProviders",
   "idleWatch.duplicate",
@@ -103,7 +112,8 @@ describe("Idle Watch locale coverage", () => {
         const expected = readTranslation(en as TranslationTree, key) as string;
         const actual = readTranslation(translations as TranslationTree, key);
         if (typeof actual !== "string") return [key];
-        return variablesOf(actual).join("\0") === variablesOf(expected).join("\0")
+        return variablesOf(actual).join("\0") ===
+          variablesOf(expected).join("\0")
           ? []
           : [key];
       });

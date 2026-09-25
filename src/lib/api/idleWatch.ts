@@ -4,7 +4,10 @@ import { invoke } from "@tauri-apps/api/core";
  * 渠道静默监控（Idle Watch）的类型与命令封装。
  *
  * 场景：某些渠道长时间不被使用会出问题（席位/配额被回收、缓存会话失效、账号被判
- * 定不活跃）。这里给「某渠道已经多久没有**成功**请求」设一个阈值，到点弹系统通知。
+ * 定不活跃），而挂掉的渠道什么时候活回来也值得知道。每条规则按 `notifyOn` 选方向：
+ * - `silence`：某渠道太久没有**成功**请求 → 提醒（本功能最初也是唯一的行为）。
+ * - `recovery`：静默先满阈值，随后到来的第一条成功请求 → 报「回来了」。
+ * - `both`：两头都要。
  *
  * 两个刻意的设计，UI 文案必须与之一致：
  * - **只有 2xx 算活动**。一直报错的渠道恰恰是「没被真正用上」，不该重置计时。
@@ -15,12 +18,19 @@ import { invoke } from "@tauri-apps/api/core";
 /** 提醒模式，对应后端 `IdleWatchMode`（serde snake_case）。 */
 export type IdleWatchMode = "once" | "always";
 
+/** 提醒方向，对应后端 `IdleWatchNotifyOn`。 */
+export type IdleWatchNotifyOn = "silence" | "recovery" | "both";
+
+/** 一条提醒是哪一头触发的，对应后端 `IdleWatchAlertKind`。 */
+export type IdleWatchAlertKind = "silence" | "recovery";
+
 /** 单条规则（后端落盘形态；阈值为字符串，与输入框直接绑定）。 */
 export interface IdleWatchRuleInput {
   appType: string;
   providerId: string;
   mode: IdleWatchMode;
   thresholdMinutes: string;
+  notifyOn: IdleWatchNotifyOn;
 }
 
 /** 整块配置（settings 表里的一条 JSON，整读整写）。 */
@@ -40,6 +50,7 @@ export interface IdleWatchRule {
   mode: IdleWatchMode;
   thresholdMinutes: number;
   createdAtSec: number;
+  notifyOn: IdleWatchNotifyOn;
 }
 
 export interface IdleWatchConfig {
@@ -65,6 +76,8 @@ export interface ChannelIdleStatus {
   /** 该渠道上的规则；null = 未监控 */
   mode: IdleWatchMode | null;
   thresholdMinutes: number | null;
+  /** 该规则的提醒方向；null = 未监控 */
+  notifyOn: IdleWatchNotifyOn | null;
 }
 
 /** 后台提醒事件负载（emit `idle-watch-alert`）。 */
@@ -75,6 +88,11 @@ export interface IdleWatchAlert {
   providerId: string;
   providerName: string;
   mode: IdleWatchMode;
+  /**
+   * 哪一头触发的。`silence` 的 `idleSec` 是「至今静默」，`recovery` 的是「那次成功
+   * 之前的静默」——同一个数字在两种正文里说的是两件事，措辞必须跟着分岔。
+   */
+  kind: IdleWatchAlertKind;
   thresholdMinutes: number;
   idleSec: number;
   keepalive: KeepaliveOutcome;
