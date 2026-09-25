@@ -126,9 +126,8 @@ pub fn decide_recovery(
     observed_last: Option<i64>,
 ) -> Option<i64> {
     // 首轮只播种。注意这一行必须排在取 observed 之前：两者都缺时也不该报。
-    let seed = match prev_last {
-        None => return None,
-        Some(seed) => seed,
+    let Some(seed) = prev_last else {
+        return None;
     };
     let observed = observed_last?;
     // 基线要夹到 `created_at_sec`，理由与静默计时完全一样（模块头约束 1），但这里多
