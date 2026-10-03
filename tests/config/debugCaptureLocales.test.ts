@@ -20,11 +20,12 @@ const requiredKeys = [
   "settings.advanced.debugCapture.kind.request",
   "settings.advanced.debugCapture.kind.response",
   "settings.advanced.debugCapture.kind.error",
-  // 流式那一条的存在感全靠这两个 key：kind 标签 + 「正文不捕获」的说明。
-  // 少了 hint，用户看到的就是一块空白 + 「无响应」的旧误会。
+  // 流式那一条的存在感全靠这几个 key：kind 标签 + 「只抓首个事件」的说明 +
+  // 首帧还没抓到时的占位。少了 hint，用户看到的就是一块空白 + 「无响应」的旧误会。
   "settings.advanced.debugCapture.kind.stream_response",
   "settings.advanced.debugCapture.stream.title",
   "settings.advanced.debugCapture.stream.hint",
+  "settings.advanced.debugCapture.stream.noFirstEvent",
   "settings.advanced.debugCapture.stream.chunks",
   "settings.advanced.debugCapture.stream.elapsed",
   "settings.advanced.debugCapture.stream.chunksLabel",

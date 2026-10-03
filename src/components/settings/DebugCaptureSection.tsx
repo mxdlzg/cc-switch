@@ -525,7 +525,7 @@ export function DebugCaptureSection() {
    */
   const renderDetail = (turn: Turn) => {
     // 默认落在**结局**那一条：成功看最后一条响应（故障转移时最后那次才是真结果），
-    // 失败看最后一条错误，流式那轮落在流式条目上（那里写着「正文不捕获」+ 统计）。
+    // 失败看最后一条错误，流式那轮落在流式条目上（首帧原文 + 收尾统计都在那里）。
     const lastOf = (kind: CaptureKind) =>
       [...turn.events].reverse().find((e) => e.kind === kind);
     const defaultTab = turn.succeeded
@@ -638,8 +638,8 @@ export function DebugCaptureSection() {
                       </span>
                     )}
                   </span>
-                  {/* 流式条目没有正文，复制按钮无处发力，直接不给。 */}
-                  {ev.kind !== "stream_response" && (
+                  {/* 有正文才给复制按钮：流式条目首帧没到时 body 是空串，无处发力。 */}
+                  {ev.body !== "" && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -651,55 +651,71 @@ export function DebugCaptureSection() {
                   )}
                 </div>
                 {/* 弹窗内唯一的正文滚动区：不再叠 max-h，撑满右列即可。
-                    流式条目走另一块：那里讲「为什么不存正文」+ 结局，而不是空一片
-                    让用户以为没响应——这正是本次改动要修掉的误读。 */}
+                    流式条目上方多一块统计（讲清「只留首帧」+ 结局，shrink-0 不滚动），
+                    下面照样把首帧原文摊出来——usage / 思考强度回显就在首帧里。 */}
                 {ev.kind === "stream_response" ? (
-                  <div className="mx-4 mb-4 flex-1 overflow-auto rounded bg-muted/50 p-3 text-[11px] leading-relaxed">
-                    <p className="font-medium">
-                      {t(
-                        "settings.advanced.debugCapture.stream.title",
-                        "流式响应（SSE）：正文不捕获",
-                      )}
-                    </p>
-                    <p className="mt-1 text-muted-foreground">
-                      {t(
-                        "settings.advanced.debugCapture.stream.hint",
-                        "上游已返回上面那个状态码，所以这一轮是有响应的；SSE 体积大且不是排查目标，故只记元信息与收尾统计。",
-                      )}
-                    </p>
-                    <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono">
-                      <dt className="text-muted-foreground">
-                        {t("settings.advanced.debugCapture.stream.elapsed")}
-                      </dt>
-                      <dd>
-                        {ev.stream
-                          ? `${(ev.stream.elapsedMs / 1000).toFixed(1)}s`
-                          : "—"}
-                      </dd>
-                      <dt className="text-muted-foreground">
-                        {t("settings.advanced.debugCapture.stream.chunksLabel")}
-                      </dt>
-                      <dd>{ev.stream?.chunks ?? "—"}</dd>
-                      <dt className="text-muted-foreground">
-                        {t("settings.advanced.debugCapture.stream.bytesLabel")}
-                      </dt>
-                      <dd>{ev.stream ? formatBytes(ev.stream.bytes) : "—"}</dd>
-                      <dt className="text-muted-foreground">
+                  <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-4">
+                    <div className="shrink-0 rounded bg-muted/50 p-3 text-[11px] leading-relaxed">
+                      <p className="font-medium">
                         {t(
-                          "settings.advanced.debugCapture.stream.outcomeLabel",
+                          "settings.advanced.debugCapture.stream.title",
+                          "流式响应（SSE）：只捕获首个事件",
                         )}
-                      </dt>
-                      <dd>
-                        {ev.stream
-                          ? t(
-                              `settings.advanced.debugCapture.stream.outcome.${ev.stream.outcome}`,
-                            )
-                          : t(
-                              "settings.advanced.debugCapture.stream.running",
-                              "流式进行中",
-                            )}
-                      </dd>
-                    </dl>
+                      </p>
+                      <p className="mt-1 text-muted-foreground">
+                        {t(
+                          "settings.advanced.debugCapture.stream.hint",
+                          "上游已经返回了上面那个状态码，所以这一轮是有响应的。整条 SSE 体积大，故只留首个非心跳事件（usage、思考强度等回显就在首帧里），后面的帧只有下面的统计。",
+                        )}
+                      </p>
+                      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono">
+                        <dt className="text-muted-foreground">
+                          {t("settings.advanced.debugCapture.stream.elapsed")}
+                        </dt>
+                        <dd>
+                          {ev.stream
+                            ? `${(ev.stream.elapsedMs / 1000).toFixed(1)}s`
+                            : "—"}
+                        </dd>
+                        <dt className="text-muted-foreground">
+                          {t(
+                            "settings.advanced.debugCapture.stream.chunksLabel",
+                          )}
+                        </dt>
+                        <dd>{ev.stream?.chunks ?? "—"}</dd>
+                        <dt className="text-muted-foreground">
+                          {t(
+                            "settings.advanced.debugCapture.stream.bytesLabel",
+                          )}
+                        </dt>
+                        <dd>
+                          {ev.stream ? formatBytes(ev.stream.bytes) : "—"}
+                        </dd>
+                        <dt className="text-muted-foreground">
+                          {t(
+                            "settings.advanced.debugCapture.stream.outcomeLabel",
+                          )}
+                        </dt>
+                        <dd>
+                          {ev.stream
+                            ? t(
+                                `settings.advanced.debugCapture.stream.outcome.${ev.stream.outcome}`,
+                              )
+                            : t(
+                                "settings.advanced.debugCapture.stream.running",
+                                "流式进行中",
+                              )}
+                        </dd>
+                      </dl>
+                    </div>
+                    {/* 首帧原文：本列唯一滚动区就是它，统计块不参与滚动。 */}
+                    <pre className="min-h-0 flex-1 overflow-auto rounded bg-muted/50 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">
+                      {ev.body ||
+                        t(
+                          "settings.advanced.debugCapture.stream.noFirstEvent",
+                          "首帧还没抓到（流刚建立，或上游未按 SSE 分帧）",
+                        )}
+                    </pre>
                   </div>
                 ) : (
                   <pre className="mx-4 mb-4 flex-1 overflow-auto rounded bg-muted/50 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">

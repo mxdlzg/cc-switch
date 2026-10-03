@@ -713,11 +713,17 @@ pub fn create_logged_passthrough_stream(
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut collector = usage_collector;
         let mut finish_guard = collector.clone().map(SseUsageFinishGuard::new);
-        // 抓取开启时才有值：每块计数、退出时按原因收尾。抓取关闭 → None，热路径
+        // 抓取开启时才有值：每块计数、补写首帧、退出时按原因收尾。抓取关闭 → None，热路径
         // 只剩一个 Option 分支；流被提前 drop → Drop 里补一条 Aborted。
         let mut capture = stream_capture;
         let inspect_sse_events =
             collector.is_some() || log::log_enabled!(log::Level::Debug);
+        // 只为「抓首帧」而拆包时要给个上界：正常上游第一个数据帧就在首块里，若上游
+        // 压根不按 SSE 分帧（取不出完整事件），继续追加会让 buffer 无界增长——所以
+        // 按**字节**封顶，宁可少抓一帧也不放大透传路径的内存。首帧到手后这条理由
+        // 自动消失（first_event_captured），后续帧不再多拆一次。
+        const FIRST_EVENT_SCAN_BYTES: usize = 256 * 1024;
+        let mut first_event_scan_budget = FIRST_EVENT_SCAN_BYTES;
         let mut is_first_chunk = true;
 
         // 超时配置
@@ -780,12 +786,31 @@ pub fn create_logged_passthrough_stream(
                     if let Some(c) = &capture {
                         c.count(bytes.len());
                     }
-                    if inspect_sse_events {
+                    // 抓取还欠一个「首帧」时也得拆包：usage / 思考强度回显就在首帧里，
+                    // 而 usage collector 与 Debug 日志都可能关掉。首帧一到，这个条件
+                    // 自己变假，后续帧不再多拆一次；上游一直不发完整事件时靠字节预算
+                    // 收手，免得为了一帧把透传 buffer 撑大。
+                    let wants_first_event = capture
+                        .as_ref()
+                        .is_some_and(|c| !c.first_event_captured())
+                        && first_event_scan_budget > 0;
+                    if wants_first_event {
+                        first_event_scan_budget =
+                            first_event_scan_budget.saturating_sub(bytes.len());
+                    }
+                    if inspect_sse_events || wants_first_event {
                         crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
                         // 尝试解析并记录完整的 SSE 事件
                         while let Some(event_text) = take_sse_block(&mut buffer) {
                             if !event_text.trim().is_empty() {
+                                // 首帧交给抓取器：它在 ping 上会退回 false 并保留名额，
+                                // 所以这里逐块问，直到某一帧真有负载。
+                                if wants_first_event {
+                                    if let Some(c) = &capture {
+                                        c.record_first_event(&event_text);
+                                    }
+                                }
                                 // 提取 data 部分；只有 usage collector 存在时才解析 JSON。
                                 for line in event_text.lines() {
                                     if let Some(data) = strip_sse_field(line, "data") {

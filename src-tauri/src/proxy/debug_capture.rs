@@ -11,9 +11,12 @@
 //!   日志文件都无关。
 //! - **单具身捕获有字节上限**：单个 body 截断到 [`MAX_BODY_CHARS`]，缓冲总量由
 //!   条数上限 [`CAPTURE_CAP`] 兜底。
-//! - **流式响应的正文不捕获**：SSE 走透传、体积极大且非本次 debug 目标。但**流本身
-//!   要记一条** [`CaptureKind::StreamResponse`]：上游回 200 + `text/event-stream` 那一刻
-//!   我们确实知道「响应到了」，不记就会让整轮看起来「无响应」——那是错的，只是没正文。
+//! - **流式响应只抓首个 SSE 事件**：整条 SSE 走透传、体积极大，全部留下会立刻
+//!   撑爆缓冲；但**首帧**必须留——Anthropic 的 `message_start`、Responses 的
+//!   `response.created` 都在里面，用量、思考强度这些排查要看的字段正是它带的。
+//!   同时**流本身要记一条** [`CaptureKind::StreamResponse`]：上游回 200 +
+//!   `text/event-stream` 那一刻我们确实知道「响应到了」，不记就会让整轮看起来
+//!   「无响应」——那是错的，只是没有完整正文。
 //!
 //! 关联键：`turn_id` 标记**一次入站 HTTP 请求**，同一轮内的入站/出站/响应/错误
 //! 事件共享它，前端据此配对成「一轮问答」。`session_id` 是**整段对话**（客户端带的
@@ -62,6 +65,13 @@ enum CaptureMsg {
         seq: u64,
         stats: StreamStats,
     },
+    /// 按 seq 就地补写**首个非心跳的 SSE 事件**。流开始时条目先落库（那时一个字节
+    /// 都还没读到），首帧到达时才回填，故与 [`CaptureMsg::FinishStream`] 同样走
+    /// 同一条 FIFO。
+    FirstEvent {
+        seq: u64,
+        block: String,
+    },
 }
 
 /// 投递侧发送端；消费者任务取出后独占接收端。
@@ -106,9 +116,10 @@ pub enum CaptureKind {
     Error,
     /// 重放器成功（或终态）时拿到的响应体——客户端从未收到它，故存进查看器供回看
     ReplayResponse,
-    /// 流式（SSE）响应的元信息：状态码 + 块数/字节数/耗时 + 结局。
-    /// **刻意没有正文**（SSE 体积大且非 debug 目标），但必须有这一条——上游已经回了
-    /// 200，说这轮「无响应」是错的。
+    /// 流式响应（SSE）的元信息 + **首个非心跳的事件**。
+    /// 首帧留正文（Anthropic 的 `message_start`、Responses 的 `response.created` 都在
+    /// 第一帧，usage / 思考强度等回显字段正是它带的）；其余帧不存——整条 SSE 体积大、
+    /// 且透传路径上逐帧留转会立刻把环形缓冲撑满。
     StreamResponse,
 }
 
@@ -158,7 +169,8 @@ pub struct CaptureEvent {
     /// 仅对 Response 有意义：true=透传路径的上游原文；false=格式转换后的响应。
     /// 请求 / 错误条目恒为 false。
     pub raw_upstream: bool,
-    /// body 原文（JSON 尽量美化；截断到 [`MAX_BODY_CHARS`]）
+    /// body 原文（JSON 尽量美化；截断到 [`MAX_BODY_CHARS`]）。
+    /// 流式条目只带**首个非心跳的 SSE 事件**，流还在跑时为空串。
     pub body: String,
     /// body 是否被截断
     pub truncated: bool,
@@ -260,6 +272,81 @@ fn buffer_finish_stream(seq: u64, stats: StreamStats) {
     }
 }
 
+/// 按 seq 就地补写首个 SSE 事件。
+fn buffer_first_event(seq: u64, block: String) {
+    let (block, truncated) = truncate(block);
+    let buf = buffer();
+    let mut guard = match buf.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(event) = guard.iter_mut().find(|e| e.seq == seq) {
+        if event.body.is_empty() {
+            event.body = block;
+            event.truncated = truncated;
+        }
+    }
+}
+
+/// 这个 SSE 事件值不值得当「首帧」留下。
+///
+/// 判据 = 「至少有一行 `data:` 负载，且它不是纯心跳」。Claude 在 `message_start`
+/// 之前先发 `event: ping` / `data: {"type":"ping"}`，照字面收第一帧只会收到一个空壳；
+/// 一旦某行负载有信息量就整块留下（`event:` / `id:` 行跟着一起走，不做取舍）。
+fn is_meaningful_sse_event(block: &str) -> bool {
+    for line in block.lines() {
+        let Some(data) = crate::proxy::sse::strip_sse_field(line, "data") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() {
+            continue;
+        }
+        // 心跳有两种写法：裸 `ping` 字面量，或 `{"type":"ping"}`。
+        if data == "ping" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+            if value.get("type").and_then(|t| t.as_str()) == Some("ping") {
+                continue;
+            }
+        }
+        return true;
+    }
+    false
+}
+
+/// 把 SSE 事件文本里的 `data:` 负载尽量美化成缩进 JSON，便于人眼读 usage / 思考强度。
+///
+/// 刻意**保留 `event:` / `id:` 行与原顺序**：那是「这一帧是什么事件」的唯一线索，
+/// 只美化 data 才是「原文 + 好看一点」而不是「换了一份东西」。非 JSON 负载原样保留。
+///
+/// 代价要说清：美化后的 data 跨多行、只有首行带 `data:` 前缀，所以这段文本**只供阅读**，
+/// 不是能直接回灌给解析器的字节流（与本模块其余捕获同样口径——它们也是美化过的）。
+fn prettify_sse_block(block: &str) -> String {
+    let mut out = String::with_capacity(block.len() + 32);
+    for line in block.lines() {
+        match crate::proxy::sse::strip_sse_field(line, "data") {
+            Some(data) => {
+                out.push_str("data: ");
+                match serde_json::from_str::<serde_json::Value>(data.trim()) {
+                    Ok(value) => out.push_str(
+                        &serde_json::to_string_pretty(&value)
+                            .unwrap_or_else(|_| data.trim().to_string()),
+                    ),
+                    Err(_) => out.push_str(data.trim()),
+                }
+                out.push('\n');
+            }
+            None => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out.trim_end().to_string()
+}
+
 /// 首次捕获时惰性拉起消费者任务。
 ///
 /// 仅在**已有 tokio 运行时**时启动（生产路径：forwarder/response_processor 都跑在
@@ -278,6 +365,7 @@ fn ensure_consumer() -> bool {
                 match msg {
                     CaptureMsg::Push(event) => buffer_push(event),
                     CaptureMsg::FinishStream { seq, stats } => buffer_finish_stream(seq, stats),
+                    CaptureMsg::FirstEvent { seq, block } => buffer_first_event(seq, block),
                 }
             }
         });
@@ -568,9 +656,11 @@ pub fn record_error(
 /// 一条流式响应的**起始**信息，在透传流建好、即将回给客户端时构造
 /// （见 `RequestContext::stream_capture_seed`）。
 ///
-/// 状态码、渠道、模型此刻都已确定，所以先落一条条目；正文一个字节都不存
-/// （SSE 体积大且非本次 debug 目标），流结束时由 [`StreamCaptureHandle::finish`]
-/// 回填块数/字节数/耗时/结局。
+/// 状态码、渠道、模型此刻都已确定，所以先落一条条目；正文此刻还没有，等首帧到达时
+/// 由 [`StreamCaptureHandle::record_first_event`] 回填**首个非心跳的 SSE 事件**
+/// （usage / reasoning 回显都在首帧里），其余帧一个字节都不存（整条 SSE 体积大且
+/// 非本次 debug 目标），流结束时由 [`StreamCaptureHandle::finish`] 回填
+/// 块数/字节数/耗时/结局。
 #[derive(Debug, Clone)]
 pub struct StreamCaptureSeed {
     pub turn_id: u64,
@@ -596,6 +686,9 @@ pub struct StreamCaptureHandle {
     started: std::time::Instant,
     /// 已收尾标记：`finish` 置真，避免 Drop 再报一次 `Aborted`。
     finished: bool,
+    /// 首帧是否已投递。置真后 [`record_first_event`](Self::record_first_event) 首行
+    /// 即返回，调用方（透传循环）据此跳过后续帧的 SSE 拆包。
+    first_event_done: AtomicBool,
 }
 
 impl StreamCaptureSeed {
@@ -610,7 +703,7 @@ impl StreamCaptureSeed {
             &self.model,
             Some(self.status),
             self.raw_upstream,
-            // 刻意空 body：正文不抓；前端按 kind 说明「流式响应无正文」。
+            // body 此刻必然为空：首帧还没读到，前端按 kind 说明「等首帧」。
             String::new(),
             None,
         )?;
@@ -620,11 +713,53 @@ impl StreamCaptureSeed {
             bytes: AtomicU64::new(0),
             started: std::time::Instant::now(),
             finished: false,
+            first_event_done: AtomicBool::new(false),
         })
     }
 }
 
 impl StreamCaptureHandle {
+    /// 首帧是否已经落库。为真时透传循环不必再从字节里拆 SSE 事件。
+    pub fn first_event_captured(&self) -> bool {
+        self.first_event_done.load(Ordering::Relaxed)
+    }
+
+    /// 补写**首个非心跳的 SSE 事件**（`block` 是去掉空行分隔符后的原始事件文本）。
+    ///
+    /// 只认第一个「有信息量」的事件，之后的 delta 帧一律丢弃：排查要看的是 usage /
+    /// 模型名 / 思考模式回显（Anthropic 的 `message_start`、Responses 的
+    /// `response.created`），而 Claude 在它们之前先插一个 `ping`，照字面收「第一帧」
+    /// 会收到一个空 ping。delta 帧全是正文增量，留着只会把缓冲里别的捕获挤掉。
+    ///
+    /// 传 `&str`：美化本来就会产出一个新 `String`，调用方不必先克隆一份。
+    pub fn record_first_event(&self, block: &str) {
+        if self.first_event_captured() || !is_meaningful_sse_event(block) {
+            return;
+        }
+        // 只有「从未成功投递过」的那一次才继续；并发重复调用里只有一次能赢。
+        if self
+            .first_event_done
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        let block = prettify_sse_block(block);
+        if ensure_consumer() {
+            let Some(tx) = TX.get() else { return };
+            if let Err(e) = tx.try_send(CaptureMsg::FirstEvent {
+                seq: self.seq,
+                block,
+            }) {
+                log::debug!("[DebugCapture] 丢弃流式首事件（队列饱和）: {e}");
+                // 投递失败 = 查看器里看不到这一帧，标记回退，让后续事件还有机会补上。
+                self.first_event_done.store(false, Ordering::Relaxed);
+            }
+        } else {
+            buffer_first_event(self.seq, block);
+        }
+    }
+
     /// 记一块透传字节。每块两次原子自增，相对网络 I/O 可忽略，且只在抓取开启时发生。
     pub fn count(&self, n: usize) {
         self.chunks.fetch_add(1, Ordering::Relaxed);
@@ -848,7 +983,7 @@ mod tests {
             set_enabled(true);
             let handle = seed(200).begin().expect("开启态应拿到流式句柄");
             // 流**开始**时条目就得在缓冲里（状态码此刻已知）——否则那一轮看起来像
-            // 「无响应」，正是这次改动要修掉的误读。此刻还没有统计。
+            // 「无响应」，正是这次改动要修掉的误读。此刻既没有统计，也没有首帧。
             let snap = snapshot();
             let ev = snap
                 .iter()
@@ -856,7 +991,7 @@ mod tests {
                 .expect("流开始时就应有一条条目");
             assert_eq!(ev.status, Some(200));
             assert!(ev.raw_upstream);
-            assert!(ev.body.is_empty(), "正文刻意不抓");
+            assert!(ev.body.is_empty(), "首帧还没读到，不能假装有正文");
             assert!(ev.stream.is_none(), "此刻还没收尾，不能假装有统计");
 
             handle.count(1_000);
@@ -900,6 +1035,89 @@ mod tests {
             let stats = ev.stream.clone().expect("Drop 也要回填统计");
             assert_eq!(stats.outcome, StreamOutcome::Aborted);
             assert_eq!(stats.chunks, 1);
+        });
+    }
+
+    #[test]
+    fn first_sse_event_is_captured_once_and_ping_is_skipped() {
+        with_isolated_buffer(|| {
+            set_enabled(true);
+            let handle = seed(200).begin().unwrap();
+            // Claude 的实际顺序：先 ping 再 message_start。照字面收「第一帧」只会
+            // 收到一个空壳 ping，所以 ping 必须被跳过而不是占用首帧名额。
+            handle.record_first_event("event: ping\ndata: {\"type\":\"ping\"}");
+            assert!(
+                !handle.first_event_captured(),
+                "ping 不算首帧，不该占用名额"
+            );
+            handle.record_first_event(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":7},\"thinking\":{\"type\":\"enabled\"}}}",
+            );
+            assert!(handle.first_event_captured());
+            // 后续 delta 帧一律不再改 body（否则缓冲会被正文刷满）。
+            handle.record_first_event("event: content_block_delta\ndata: {\"type\":\"delta\"}");
+
+            let snap = snapshot();
+            let ev = snap
+                .iter()
+                .find(|e| e.kind == CaptureKind::StreamResponse)
+                .unwrap();
+            assert!(
+                ev.body.contains("message_start"),
+                "首帧应是 message_start，实际={}",
+                ev.body
+            );
+            assert!(!ev.body.contains("ping"), "心跳不该留下");
+            assert!(
+                !ev.body.contains("content_block_delta"),
+                "第二帧不该覆盖首帧"
+            );
+            assert!(ev.body.contains("input_tokens"), "data 负载应保留");
+            assert!(ev.body.contains("event: message_start"), "event: 行应保留");
+            assert!(ev.body.contains('\n'), "data 应被美化成多行");
+            assert!(!ev.truncated);
+        });
+    }
+
+    #[test]
+    fn bare_ping_and_empty_blocks_are_not_first_events() {
+        with_isolated_buffer(|| {
+            set_enabled(true);
+            let handle = seed(200).begin().unwrap();
+            for block in [
+                "event: ping\ndata: ping",
+                "data: ",
+                "   ",
+                "event: ping",
+                "comment only",
+            ] {
+                handle.record_first_event(block);
+            }
+            assert!(
+                !handle.first_event_captured(),
+                "心跳 / 空块 / 无 data 的块都不算首帧"
+            );
+            let snap = snapshot();
+            let ev = snap
+                .iter()
+                .find(|e| e.kind == CaptureKind::StreamResponse)
+                .unwrap();
+            assert!(ev.body.is_empty(), "一条都没收下，body 必须为空");
+        });
+    }
+
+    #[test]
+    fn non_json_data_payload_is_kept_verbatim() {
+        with_isolated_buffer(|| {
+            set_enabled(true);
+            let handle = seed(200).begin().unwrap();
+            handle.record_first_event("data: not-json-but-has-payload");
+            let snap = snapshot();
+            let ev = snap
+                .iter()
+                .find(|e| e.kind == CaptureKind::StreamResponse)
+                .unwrap();
+            assert_eq!(ev.body, "data: not-json-but-has-payload");
         });
     }
 

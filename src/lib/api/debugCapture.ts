@@ -13,9 +13,11 @@ import { invoke } from "@tauri-apps/api/core";
  * `replay_response` 由重放器写入：那份响应客户端从未收到（没人在等它），存进来是
  * 给用户回来点开看的。
  *
- * `stream_response` 是流式（SSE）响应的**元信息**：上游回 200 + `text/event-stream`
- * 那一刻我们就已经知道「响应到了」，所以必须有这一条（否则那一轮看起来像没响应），
- * 但**正文刻意不抓**（SSE 体积大且非 debug 目标）。
+ * `stream_response` 是流式（SSE）响应的**元信息 + 首个带负载的事件**：上游回 200 +
+ * `text/event-stream` 那一刻我们就已经知道「响应到了」，所以必须有这一条（否则那一轮
+ * 看起来像没响应）。正文只留**首帧**——Anthropic 的 `message_start`、Responses 的
+ * `response.created` 都在第一帧，usage / 思考强度这些回显字段正是它带的；后续 delta
+ * 帧全是正文增量，整条留下会立刻把 50 条的环形缓冲挤满，故不抓。
  */
 export type CaptureKind =
   | "client_request"
@@ -67,7 +69,12 @@ export interface CaptureEvent {
   status: number | null;
   /** 仅对响应类条目有意义：true = 透传路径的上游原文；false = 格式转换后的响应 */
   rawUpstream: boolean;
-  /** body 原文（JSON 尽量美化；后端截断到 200k 字符）。流式条目恒为空串 */
+  /**
+   * body 原文（JSON 尽量美化；后端截断到 200k 字符）。
+   *
+   * 流式条目只带**首个非心跳的 SSE 事件**：`event:` 行按原样保留，`data:` 负载被
+   * 美化成多行缩进 JSON（只为好读，不是一段能直接回灌的字节流）。首帧还没读到时是空串。
+   */
   body: string;
   /** body 是否被后端截断 */
   truncated: boolean;
